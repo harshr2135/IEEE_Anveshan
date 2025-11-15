@@ -30,6 +30,13 @@
     #datasetPreview .matches { color: #15803d; font-weight: 500; }
     #datasetPreview .match-item { display: inline-block; background: #dcfce7; padding: 3px 8px; margin: 2px; border-radius: 4px; border: 1px solid #86efac; }
     #datasetPreview .no-matches { color: #9ca3af; font-style: italic; }
+    #voiceBtn.live { background:#fee2e2; border-color:#f87171; color:#b91c1c; }
+    #voiceStatus { margin-top:4px; font-size:12px; color:#92400e; }
+    .semantic-panel { background:#fefce8; border:1px solid #fcd34d; padding:8px; border-radius:8px; font-size:12px; margin-top:6px; display:none; }
+    .semantic-panel .label { font-size:11px; text-transform:uppercase; font-weight:600; color:#92400e; margin-bottom:4px; }
+    .semantic-match { display:flex; gap:6px; align-items:center; margin:2px 0; }
+    .semantic-match span { font-family:ui-monospace, monospace; color:#78350f; }
+    .semantic-match input { margin:0; }
     .viewWrap { position: relative; display: inline-block; }
     .viewBadge { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,0.6); color:#fff; font: 12px ui-monospace, monospace; padding: 2px 6px; border-radius: 6px; z-index: 2; }
   </style>
@@ -44,7 +51,9 @@
         <input id="sentenceInput" type="text" placeholder="Enter English sentence (e.g., I am happy today)">
       </label>
       <button id="convertBtn">Convert to ISL</button>
+      <button id="voiceBtn" type="button">🎙 Speak</button>
     </div>
+    <div id="voiceStatus" class="muted">Voice: checking support…</div>
     <div id="datasetPreview">
       <div class="label">Available in dataset:</div>
       <div class="matches" id="datasetMatches"></div>
@@ -54,6 +63,10 @@
       <div class="glosses" id="glosses"></div>
     </div>
     <div id="warnings"></div>
+    <div id="semanticPanel" class="semantic-panel">
+      <div class="label">Semantic matches (toggle to keep/remove):</div>
+      <div id="semanticMatches"></div>
+    </div>
     <div class="row" style="margin-top: 6px;">
       <button id="playSentence" disabled>Play Sentence</button>
       <button id="stopSentence" disabled>Stop Sentence</button>
@@ -86,6 +99,7 @@
       <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
         <label><input type="checkbox" id="flipY"> Flip Y</label>
         <label><input type="checkbox" id="autofit" checked> Auto-fit pixels</label>
+        <label><input type="checkbox" id="showBBox"> Show bbox</label>
       </div>
       <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
         <label>Point size <input type="range" id="ptSize" min="1" max="8" step="0.5" value="4"></label>
@@ -202,74 +216,445 @@
     const FUNCTION_WORDS = new Set([
       'a', 'an', 'the', 'is', 'am', 'are', 'was', 'were', 'be', 'been',
       'will', 'would', 'can', 'could', 'should', 'shall', 'may', 'might',
-      'to', 'at', 'in', 'on', 'of', 'for', 'with', 'from', 'by', 'about'
+      'to', 'at', 'in', 'on', 'of', 'for', 'with', 'from', 'by', 'about',
+      'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her',
+      'us', 'them', 'my', 'your', 'our', 'their', 'mine', 'yours', 'ours', 'theirs', 'its'
     ]);
 
-    // ---------- ISL Grammar Conversion (Longest-Match-First Algorithm) ----------
-    function convertSentenceToGloss(sentence) {
-      const original = sentence.trim();
-      if (!original) return { glosses: [], unmatched: [], warnings: [], original };
+    const SEMANTIC_ALIASES = {
+      'alright': ['okay', 'ok', 'fine'],
+      'beautiful': ['pretty', 'gorgeous', 'lovely'],
+      'bed': ['bunk', 'cot'],
+      'bedroom': ['bed room', 'room', 'sleeping room'],
+      'blind': ['visionless', 'sightless', 'visually impaired', 'vision impaired'],
+      'cell phone': ['mobile phone', 'mobile', 'phone', 'smartphone', 'cellphone'],
+      'chair': ['seat', 'stool', 'armchair'],
+      'clock': ['watch', 'timepiece'],
+      'computer': ['pc', 'laptop', 'desktop', 'computer system'],
+      'deaf': ['hearing impaired', 'hard of hearing'],
+      'door': ['gate', 'entryway'],
+      'dream': ['vision', 'fantasy', 'imagine'],
+      'dress': ['gown', 'frock'],
+      'fan': ['cooler', 'blower', 'ceiling fan'],
+      'friday': ['fri'],
+      'good afternoon': ['afternoon greeting', 'good noon'],
+      'good morning': ['morning greeting', 'gm', 'good day'],
+      'happy': ['glad', 'joyful', 'cheerful', 'pleased'],
+      'hat': ['cap', 'beanie'],
+      'hello': ['hi', 'hey', 'greetings'],
+      'how are you': ['how r u', 'how are ya', 'how you doing'],
+      'lamp': ['light', 'lantern'],
+      'loud': ['noisy', 'booming'],
+      'monday': ['mon'],
+      'quiet': ['silent', 'hushed', 'calm'],
+      'sad': ['unhappy', 'upset', 'sorrowful'],
+      'saturday': ['sat'],
+      'shirt': ['top', 'tshirt', 't-shirt', 'tee'],
+      'skirt': ['mini', 'skirts', 'pleated skirt'],
+      'suit': ['blazer', 'tuxedo', 'coat and pants'],
+      'sunday': ['sun'],
+      'table': ['desk', 'dining table'],
+      'thursday': ['thu'],
+      'today': ['present day', 'nowadays'],
+      'tuesday': ['tue'],
+      'ugly': ['unattractive', 'plain'],
+      'wednesday': ['wed'],
+      'window': ['pane', 'glass window']
+    };
 
-      let text = original.toLowerCase().replace(/[.,!?;:]/g, '');
-      
-      // Step 1: Build list of all phrases sorted by length (longest first)
-      const allPhrases = [...AVAILABLE_WORDS].sort((a, b) => b.length - a.length);
-      
-      // Step 2: Greedy matching - find longest matches first
-      const matched = [];
-      const unmatched = [];
-      const words = text.split(/\s+/).filter(w => w.length > 0);
+    const LEMMA_OVERRIDES = {
+      'better': 'good',
+      'best': 'good',
+      'worse': 'bad',
+      'worst': 'bad',
+      'happier': 'happy',
+      'happiest': 'happy',
+      'sadder': 'sad',
+      'saddest': 'sad',
+      'children': 'child',
+      'men': 'man',
+      'women': 'woman',
+      'people': 'person',
+      'phones': 'phone',
+      'cellphones': 'cellphone'
+    };
+
+    const LEMMA_SUFFIX_RULES = [
+      { suffix: 'ies', replacement: 'y', min: 4 },
+      { suffix: 'ves', replacement: 'f', min: 4 },
+      { suffix: 'ing', replacement: '', min: 5 },
+      { suffix: 'ed', replacement: '', min: 4 },
+      { suffix: 'est', replacement: '', min: 5 },
+      { suffix: 'er', replacement: '', min: 4 },
+      { suffix: 's', replacement: '', min: 4, skipDouble: true }
+    ];
+
+    const AVAILABLE_WORD_SET = new Set(AVAILABLE_WORDS);
+    const ALIAS_TO_CANONICAL = buildAliasMap(SEMANTIC_ALIASES);
+    const RECOGNIZED_PHRASES = [...new Set([...AVAILABLE_WORDS, ...Object.keys(ALIAS_TO_CANONICAL)])];
+
+    const SEMANTIC_CATEGORY_KEYWORDS = {
+      greeting: ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'how are you'],
+      time: ['today', 'tomorrow', 'yesterday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+      clothing: ['hat', 'dress', 'shirt', 'skirt', 'suit'],
+      furniture: ['bed', 'bedroom', 'chair', 'table'],
+      device: ['computer', 'cell', 'phone', 'fan', 'lamp'],
+      feeling_pos: ['happy', 'alright', 'beautiful', 'good'],
+      feeling_neg: ['sad', 'ugly', 'loud', 'quiet'],
+      household: ['door', 'window', 'lamp'],
+      accessibility: ['blind', 'deaf'],
+      imagination: ['dream']
+    };
+
+    const SEMANTIC_CATEGORY_LIST = Object.keys(SEMANTIC_CATEGORY_KEYWORDS);
+    const LOCAL_EMBED_DIM = 64;
+    const LOCAL_EMBED_EXTRA = SEMANTIC_CATEGORY_LIST.length + 2;
+    const LOCAL_EMBED_HASH_SPACE = Math.max(16, LOCAL_EMBED_DIM - LOCAL_EMBED_EXTRA);
+
+    const SEMANTIC_MATCH_SETTINGS = {
+      minSimilarity: 0.85,
+      endpoint: window.ISL_EMBEDDING_ENDPOINT || null,
+      apiKey: window.ISL_EMBEDDING_API_KEY || null
+    };
+
+    const semanticIndexState = {
+      method: SEMANTIC_MATCH_SETTINGS.endpoint ? 'remote' : 'local',
+      ready: false,
+      entries: [],
+      dimension: LOCAL_EMBED_DIM,
+      loading: null
+    };
+
+    const EMBEDDING_CACHE = new Map();
+    let lastConversion = null;
+
+    const VoiceRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+    const voiceCapture = {
+      supported: !!VoiceRecognitionCtor,
+      recognition: null,
+      listening: false,
+      finalTranscript: '',
+      interimTranscript: ''
+    };
+
+    function buildAliasMap(table) {
+      const map = {};
+      Object.entries(table).forEach(([canonical, variants]) => {
+        const key = (canonical || '').trim().toLowerCase();
+        if (key) map[key] = canonical;
+        if (!Array.isArray(variants)) return;
+        variants.forEach(variant => {
+          const aliasKey = (variant || '').trim().toLowerCase();
+          if (aliasKey) map[aliasKey] = canonical;
+        });
+      });
+      return map;
+    }
+
+    function lemmatizeWord(word) {
+      if (!word) return '';
+      const lower = word.toLowerCase();
+      if (LEMMA_OVERRIDES[lower]) return LEMMA_OVERRIDES[lower];
+      for (const rule of LEMMA_SUFFIX_RULES) {
+        if (!lower.endsWith(rule.suffix)) continue;
+        if (lower.length <= (rule.min || 0)) continue;
+        if (rule.skipDouble && lower.endsWith(rule.suffix + rule.suffix[rule.suffix.length - 1])) continue;
+        if (rule.suffix === 's' && lower.endsWith('ss')) continue;
+        const stem = lower.slice(0, lower.length - rule.suffix.length) + (rule.replacement || '');
+        if (stem.length >= 2) return stem;
+      }
+      return lower;
+    }
+
+    function resolveCanonicalPhrase(candidate, candidateLemma) {
+      if (AVAILABLE_WORD_SET.has(candidate)) return { canonical: candidate, source: 'exact' };
+      if (candidateLemma && AVAILABLE_WORD_SET.has(candidateLemma)) return { canonical: candidateLemma, source: 'lemma' };
+      if (ALIAS_TO_CANONICAL[candidate]) return { canonical: ALIAS_TO_CANONICAL[candidate], source: 'alias' };
+      if (candidateLemma && ALIAS_TO_CANONICAL[candidateLemma]) return { canonical: ALIAS_TO_CANONICAL[candidateLemma], source: 'alias' };
+      return null;
+    }
+
+    function isTimePhrase(phrase) {
+      return phrase.split(' ').some(word => TIME_WORDS.has(word));
+    }
+
+    function buildGlossSequence(tokens) {
+      const accepted = tokens.filter(t => (t.kind === 'match' || t.kind === 'semantic') && t.accepted !== false);
+      const timeFirst = [];
+      const others = [];
+      accepted.forEach(token => {
+        (isTimePhrase(token.canonical) ? timeFirst : others).push(token);
+      });
+      return [...timeFirst, ...others].map(token => token.canonical);
+    }
+
+    function hashString(str) {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+        hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+      }
+      return hash;
+    }
+
+    function detectCategoryActivations(text) {
+      const activations = new Array(SEMANTIC_CATEGORY_LIST.length).fill(0);
+      SEMANTIC_CATEGORY_LIST.forEach((name, idx) => {
+        const keywords = SEMANTIC_CATEGORY_KEYWORDS[name];
+        if (!keywords) return;
+        for (const kw of keywords) {
+          if (text.includes(kw)) {
+            activations[idx] = 1;
+            break;
+          }
+        }
+      });
+      return activations;
+    }
+
+    function localSimpleEmbedding(text) {
+      const cleaned = (text || '').toLowerCase().trim();
+      const vec = new Float32Array(LOCAL_EMBED_DIM);
+      if (!cleaned) return vec;
+
+      for (let i = 0; i < cleaned.length; i++) {
+        const code = cleaned.charCodeAt(i);
+        const idx = (code + i) % LOCAL_EMBED_HASH_SPACE;
+        vec[idx] += 1;
+        if (i < cleaned.length - 2) {
+          const trigram = cleaned.slice(i, i + 3);
+          const triIdx = hashString(trigram) % LOCAL_EMBED_HASH_SPACE;
+          vec[triIdx] += 0.5;
+        }
+      }
+
+      vec[LOCAL_EMBED_HASH_SPACE] = Math.min(3, cleaned.length / 4);
+      vec[LOCAL_EMBED_HASH_SPACE + 1] = (cleaned.match(/[aeiou]/g) || []).length;
+
+      const categories = detectCategoryActivations(cleaned);
+      categories.forEach((value, idx) => {
+        const target = LOCAL_EMBED_DIM - categories.length + idx;
+        vec[target] = value;
+      });
+
+      return vec;
+    }
+
+    function vectorNorm(vec) {
+      if (!vec) return 0;
+      let sum = 0;
+      for (let i = 0; i < vec.length; i++) {
+        sum += vec[i] * vec[i];
+      }
+      return Math.sqrt(sum);
+    }
+
+    function cosineSimilarity(vecA, vecB, normA, normB) {
+      if (!vecA || !vecB || !normA || !normB) return 0;
+      const len = Math.min(vecA.length, vecB.length);
+      let dot = 0;
+      for (let i = 0; i < len; i++) {
+        dot += vecA[i] * vecB[i];
+      }
+      return dot / (normA * normB);
+    }
+
+    async function ensureSemanticIndexReady() {
+      if (semanticIndexState.ready) return semanticIndexState;
+      if (!semanticIndexState.loading) {
+        semanticIndexState.loading = loadSemanticIndex();
+      }
+      return semanticIndexState.loading;
+    }
+
+    async function loadSemanticIndex() {
+      if (SEMANTIC_MATCH_SETTINGS.endpoint) {
+        const remoteEntries = await buildIndexWithEndpoint();
+        if (remoteEntries.length) {
+          semanticIndexState.method = 'remote';
+          semanticIndexState.entries = remoteEntries;
+          semanticIndexState.dimension = remoteEntries[0].vector.length;
+          semanticIndexState.ready = true;
+          return semanticIndexState;
+        }
+      }
+      semanticIndexState.method = 'local';
+      semanticIndexState.entries = generateLocalSemanticIndex();
+      semanticIndexState.dimension = LOCAL_EMBED_DIM;
+      semanticIndexState.ready = true;
+      return semanticIndexState;
+    }
+
+    function wordTokenCount(text) {
+      return (text || '').trim().split(/\s+/).filter(Boolean).length || 1;
+    }
+
+    function generateLocalSemanticIndex() {
+      return AVAILABLE_WORDS.map(word => {
+        const vector = localSimpleEmbedding(word);
+        return { word, vector, norm: vectorNorm(vector), tokens: wordTokenCount(word) };
+      });
+    }
+
+    async function buildIndexWithEndpoint() {
+      const entries = [];
+      for (const word of AVAILABLE_WORDS) {
+        const vector = await fetchEmbeddingFromEndpoint(word);
+        if (!vector) {
+          return [];
+        }
+        entries.push({ word, vector, norm: vectorNorm(vector), tokens: wordTokenCount(word) });
+      }
+      return entries;
+    }
+
+    async function fetchEmbeddingFromEndpoint(text) {
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (SEMANTIC_MATCH_SETTINGS.apiKey) {
+          headers['Authorization'] = `Bearer ${SEMANTIC_MATCH_SETTINGS.apiKey}`;
+        }
+        const res = await fetch(SEMANTIC_MATCH_SETTINGS.endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ text })
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (Array.isArray(data.vector)) {
+          return Float32Array.from(data.vector.map(Number));
+        }
+      } catch (err) {
+        console.warn('Embedding endpoint error:', err);
+      }
+      return null;
+    }
+
+    async function embedText(text) {
+      const key = (text || '').toLowerCase();
+      if (EMBEDDING_CACHE.has(key)) return EMBEDDING_CACHE.get(key);
+
+      let vector = null;
+      if (semanticIndexState.method === 'remote' && SEMANTIC_MATCH_SETTINGS.endpoint) {
+        vector = await fetchEmbeddingFromEndpoint(text);
+        if (!vector) return null;
+      } else {
+        vector = localSimpleEmbedding(text);
+      }
+      EMBEDDING_CACHE.set(key, vector);
+      return vector;
+    }
+
+    async function findSemanticFallbackForToken(token) {
+      await ensureSemanticIndexReady();
+      if (!semanticIndexState.entries.length) return null;
+      const query = token.lemma || token.normalized || token.original;
+      const vector = await embedText(query);
+      if (!vector) return null;
+      const norm = vectorNorm(vector);
+      if (!norm) return null;
+      const tokenLength = wordTokenCount(token.original || token.lemma || token.normalized);
+      let best = null;
+      for (const entry of semanticIndexState.entries) {
+        if (entry.tokens && entry.tokens !== tokenLength) continue;
+        if (!entry.norm || !entry.vector) continue;
+        const score = cosineSimilarity(vector, entry.vector, norm, entry.norm);
+        if (!best || score > best.score) {
+          best = { word: entry.word, score };
+        }
+      }
+      if (best && best.score >= SEMANTIC_MATCH_SETTINGS.minSimilarity) {
+        return best;
+      }
+      return null;
+    }
+
+    async function applySemanticFallback(tokens) {
+      const applied = [];
+      const needsFallback = tokens.some(t => t.kind === 'raw');
+      if (!needsFallback) return applied;
+
+      await ensureSemanticIndexReady();
+      for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (token.kind !== 'raw') continue;
+        const fallback = await findSemanticFallbackForToken(token);
+        if (fallback) {
+          token.kind = 'semantic';
+          token.canonical = fallback.word;
+          token.source = 'semantic';
+          token.score = fallback.score;
+          token.accepted = true;
+          applied.push({ index: i, original: token.original, canonical: fallback.word, score: fallback.score });
+        }
+      }
+      return applied;
+    }
+
+    function getUnmatchedWords(tokens) {
+      return tokens.filter(t => t.kind === 'raw').map(t => t.original.toLowerCase());
+    }
+
+    // ---------- ISL Grammar Conversion (Longest-Match-First Algorithm) ----------
+    async function convertSentenceToGloss(sentence) {
+      const original = sentence.trim();
+      if (!original) return { tokens: [], semanticApplied: [], currentGlosses: [] };
+
+      const cleaned = original
+        .replace(/[.,!?;:]/g, '')
+        .replace(/['’"]/g, '')
+        .replace(/[-/]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!cleaned) return { tokens: [], semanticApplied: [], currentGlosses: [] };
+
+      const rawWords = cleaned.split(' ');
+      const normalizedWords = rawWords.map(w => w.toLowerCase());
+      const lemmaWords = normalizedWords.map(lemmatizeWord);
+
+      const tokens = [];
       let position = 0;
       
-      while (position < words.length) {
+      const maxLen = normalizedWords.length;
+
+      while (position < maxLen) {
         let foundMatch = false;
-        
-        // Try to match progressively shorter phrases from current position
-        for (let len = words.length - position; len >= 1; len--) {
-          const candidatePhrase = words.slice(position, position + len).join(' ');
-          
-          if (allPhrases.includes(candidatePhrase)) {
-            matched.push(candidatePhrase);
+        for (let len = maxLen - position; len >= 1; len--) {
+          const spanNormalized = normalizedWords.slice(position, position + len).join(' ');
+          const spanLemma = lemmaWords.slice(position, position + len).join(' ');
+          const resolved = resolveCanonicalPhrase(spanNormalized, spanLemma);
+          if (resolved) {
+            tokens.push({
+              kind: 'match',
+              canonical: resolved.canonical,
+              source: resolved.source,
+              original: rawWords.slice(position, position + len).join(' '),
+              accepted: true
+            });
             position += len;
             foundMatch = true;
             break;
           }
         }
         
-        // If no match found, check if it's a function word (skip silently) or unknown word
         if (!foundMatch) {
-          const currentWord = words[position];
+          const currentWord = normalizedWords[position];
           if (!FUNCTION_WORDS.has(currentWord)) {
-            unmatched.push(currentWord);
+            tokens.push({
+              kind: 'raw',
+              original: rawWords[position],
+              normalized: currentWord,
+              lemma: lemmaWords[position],
+              accepted: false
+            });
           }
           position++;
         }
       }
       
-      // Step 3: Apply ISL grammar rules to matched phrases
-      const timeWords = [];
-      const otherWords = [];
-      
-      matched.forEach(phrase => {
-        // Check if any word in the phrase is a time word
-        const hasTimeWord = phrase.split(' ').some(word => TIME_WORDS.has(word));
-        if (hasTimeWord) {
-          timeWords.push(phrase);
-        } else {
-          otherWords.push(phrase);
-        }
-      });
-      
-      // Time-Topic-Comment structure
-      const glosses = [...timeWords, ...otherWords];
-      
-      // Build warnings
-      const warnings = [];
-      if (unmatched.length > 0) {
-        warnings.push(`Words not in dataset (skipped): ${unmatched.join(', ')}`);
-      }
-      
-      return { glosses, unmatched, warnings, original };
+      const semanticApplied = await applySemanticFallback(tokens);
+      const currentGlosses = buildGlossSequence(tokens);
+
+      return { tokens, semanticApplied, currentGlosses };
     }
 
     // ---------- Real-time Dataset Preview ----------
@@ -292,7 +677,7 @@
       
       // Find all possible matches in dataset (longest first)
       const matches = new Set();
-      const allPhrases = [...AVAILABLE_WORDS].sort((a, b) => b.split(' ').length - a.split(' ').length);
+      const allPhrases = [...RECOGNIZED_PHRASES].sort((a, b) => b.split(' ').length - a.split(' ').length);
       
       for (const phrase of allPhrases) {
         const phraseWords = phrase.split(' ');
@@ -300,7 +685,8 @@
         for (let i = 0; i <= words.length - phraseWords.length; i++) {
           const candidate = words.slice(i, i + phraseWords.length).join(' ');
           if (candidate === phrase) {
-            matches.add(phrase);
+            const canonical = AVAILABLE_WORD_SET.has(phrase) ? phrase : (ALIAS_TO_CANONICAL[phrase] || phrase);
+            matches.add(canonical);
           }
         }
       }
@@ -328,6 +714,10 @@
       loop: false
     };
 
+    const sentenceInputEl = document.getElementById('sentenceInput');
+    const convertBtn = document.getElementById('convertBtn');
+    const voiceBtn = document.getElementById('voiceBtn');
+    const voiceStatusEl = document.getElementById('voiceStatus');
     const wordEl = document.getElementById('word');
     const statusEl = document.getElementById('status');
     const btnLoad = document.getElementById('load');
@@ -342,6 +732,7 @@
     // Render controls
     const flipYEl = document.getElementById('flipY');
     const autofitEl = document.getElementById('autofit');
+    const showBBoxEl = document.getElementById('showBBox');
     const ptSizeEl = document.getElementById('ptSize');
     const ptSizeValEl = document.getElementById('ptSizeVal');
     const ptColorEl = document.getElementById('ptColor');
@@ -378,6 +769,248 @@
 `frames: ${len}
 fps: ${fps}
 frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
+    }
+    function setVoiceStatus(text) {
+      if (voiceStatusEl) voiceStatusEl.textContent = 'Voice: ' + text;
+    }
+
+    function renderWarnings(conversion) {
+      const warningsEl = document.getElementById('warnings');
+      if (!warningsEl) return;
+      if (!conversion) {
+        warningsEl.textContent = '';
+        warningsEl.classList.remove('show');
+        return;
+      }
+
+      const unmatched = getUnmatchedWords(conversion.tokens);
+      const droppedSemantic = conversion.tokens
+        .filter(token => token.kind === 'semantic' && token.accepted === false)
+        .map(token => token.original.toLowerCase());
+      const activeSemantic = conversion.tokens
+        .filter(token => token.kind === 'semantic' && token.accepted !== false);
+
+      const messages = [];
+      const skipped = [...unmatched, ...droppedSemantic];
+      if (skipped.length) {
+        messages.push(`Words not in dataset (skipped): ${skipped.join(', ')}`);
+      }
+      if (activeSemantic.length) {
+        const detail = activeSemantic
+          .map(token => `${token.original.toLowerCase()}→${token.canonical.toUpperCase()} (${(token.score || 0).toFixed(2)})`)
+          .join(', ');
+        messages.push(`Semantic fallback applied: ${detail}`);
+      }
+
+      if (messages.length) {
+        warningsEl.textContent = messages.join(' | ');
+        warningsEl.classList.add('show');
+      } else {
+        warningsEl.textContent = '';
+        warningsEl.classList.remove('show');
+      }
+    }
+
+    function renderSemanticPanel(conversion) {
+      const panel = document.getElementById('semanticPanel');
+      const listEl = document.getElementById('semanticMatches');
+      if (!panel || !listEl) return;
+      if (!conversion) {
+        panel.style.display = 'none';
+        listEl.innerHTML = '';
+        return;
+      }
+
+      const semanticTokens = conversion.tokens
+        .map((token, index) => ({ token, index }))
+        .filter(item => item.token.kind === 'semantic');
+
+      if (!semanticTokens.length) {
+        panel.style.display = 'none';
+        listEl.innerHTML = '';
+        return;
+      }
+
+      panel.style.display = 'block';
+      const markup = semanticTokens.map(({ token, index }) => {
+        const score = (token.score || 0).toFixed(2);
+        const checked = token.accepted === false ? '' : 'checked';
+        return `<label class="semantic-match">
+          <input type="checkbox" class="semantic-toggle" data-token="${index}" ${checked}>
+          <span>${token.original} → ${token.canonical.toUpperCase()} (${score})</span>
+        </label>`;
+      }).join('');
+      listEl.innerHTML = markup;
+    }
+
+    function refreshConversionViews() {
+      const glossDisplay = document.getElementById('glossDisplay');
+      const glossText = document.getElementById('glosses');
+      const playBtn = document.getElementById('playSentence');
+
+      if (!lastConversion) {
+        glossDisplay.style.display = 'none';
+        glossText.textContent = '';
+        if (playBtn) {
+          playBtn.disabled = true;
+          playBtn.dataset.glosses = '[]';
+        }
+        renderWarnings(null);
+        renderSemanticPanel(null);
+        return;
+      }
+
+      lastConversion.currentGlosses = buildGlossSequence(lastConversion.tokens);
+      const glosses = lastConversion.currentGlosses;
+
+      if (glosses.length) {
+        glossText.textContent = glosses.map(g => g.toUpperCase()).join(' → ');
+        glossDisplay.style.display = 'block';
+        playBtn.disabled = false;
+        playBtn.dataset.glosses = JSON.stringify(glosses);
+        setStatus(`Converted to ${glosses.length} signs`);
+      } else {
+        glossText.textContent = '';
+        glossDisplay.style.display = 'none';
+        playBtn.disabled = true;
+        playBtn.dataset.glosses = '[]';
+        setStatus('No valid words found in sentence');
+      }
+
+      renderWarnings(lastConversion);
+      renderSemanticPanel(lastConversion);
+    }
+
+    async function runSentenceConversion(sentence) {
+      if (!convertBtn) return;
+      convertBtn.disabled = true;
+      setStatus('Converting sentence …');
+      const panel = document.getElementById('semanticPanel');
+      if (panel) panel.style.display = 'none';
+      try {
+        lastConversion = await convertSentenceToGloss(sentence);
+        refreshConversionViews();
+      } catch (err) {
+        console.error('Sentence conversion failed:', err);
+        setStatus('Conversion failed');
+        lastConversion = null;
+        refreshConversionViews();
+      } finally {
+        convertBtn.disabled = false;
+      }
+    }
+
+    const voiceBtnDefaultLabel = voiceBtn ? voiceBtn.textContent : '🎙 Speak';
+
+    function initVoiceRecognition() {
+      if (!voiceCapture.supported) {
+        if (voiceBtn) voiceBtn.disabled = true;
+        setVoiceStatus('Voice input not supported in this browser');
+        return null;
+      }
+      if (voiceCapture.recognition) return voiceCapture.recognition;
+      try {
+        voiceCapture.recognition = new VoiceRecognitionCtor();
+      } catch (err) {
+        console.warn('SpeechRecognition init failed:', err);
+        voiceCapture.supported = false;
+        if (voiceBtn) voiceBtn.disabled = true;
+        setVoiceStatus('Microphone unavailable');
+        return null;
+      }
+
+      const rec = voiceCapture.recognition;
+      rec.lang = 'en-US';
+      rec.interimResults = true;
+      rec.maxAlternatives = 1;
+      rec.continuous = false;
+
+      rec.onstart = () => {
+        voiceCapture.listening = true;
+        voiceCapture.finalTranscript = '';
+        voiceCapture.interimTranscript = '';
+        if (voiceBtn) {
+          voiceBtn.textContent = 'Stop';
+          voiceBtn.classList.add('live');
+        }
+        setVoiceStatus('Listening… speak now');
+      };
+
+      rec.onerror = (event) => {
+        console.warn('SpeechRecognition error:', event.error);
+        setVoiceStatus(`Mic error: ${event.error}`);
+        voiceCapture.finalTranscript = '';
+      };
+
+      rec.onresult = (event) => {
+        let finalText = voiceCapture.finalTranscript;
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
+          if (result.isFinal) {
+            finalText += result[0].transcript;
+          } else {
+            interim += result[0].transcript;
+          }
+        }
+        voiceCapture.finalTranscript = finalText;
+        voiceCapture.interimTranscript = interim;
+        const combined = (finalText + ' ' + interim).trim();
+        if (combined && sentenceInputEl) {
+          sentenceInputEl.value = combined;
+        }
+      };
+
+      rec.onend = () => {
+        voiceCapture.listening = false;
+        if (voiceBtn) {
+          voiceBtn.textContent = voiceBtnDefaultLabel;
+          voiceBtn.classList.remove('live');
+        }
+        if (voiceCapture.finalTranscript && voiceCapture.finalTranscript.trim()) {
+          if (sentenceInputEl) {
+            sentenceInputEl.value = voiceCapture.finalTranscript.trim();
+          }
+          setVoiceStatus('Transcribing complete');
+          runSentenceConversion(sentenceInputEl ? sentenceInputEl.value : voiceCapture.finalTranscript);
+        } else {
+          setVoiceStatus('Mic idle');
+        }
+        voiceCapture.finalTranscript = '';
+        voiceCapture.interimTranscript = '';
+      };
+
+      return rec;
+    }
+
+    function attachVoiceButton() {
+      if (!voiceBtn) {
+        setVoiceStatus('Voice control unavailable');
+        return;
+      }
+      if (!voiceCapture.supported) {
+        voiceBtn.disabled = true;
+        setVoiceStatus('Voice input not supported in this browser');
+        return;
+      }
+      setVoiceStatus('Tap mic to speak');
+      voiceBtn.addEventListener('click', () => {
+        const rec = initVoiceRecognition();
+        if (!rec) return;
+        if (voiceCapture.listening) {
+          try { rec.stop(); } catch (err) { console.warn('stop failed', err); }
+        } else {
+          voiceCapture.finalTranscript = '';
+          voiceCapture.interimTranscript = '';
+          try {
+            rec.start();
+            setVoiceStatus('Listening…');
+          } catch (err) {
+            console.warn('SpeechRecognition start failed:', err);
+            setVoiceStatus('Unable to access microphone');
+          }
+        }
+      });
     }
 
     // ---------- JSON normalization ----------
@@ -615,19 +1248,154 @@ frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
       return {minX, minY, maxX, maxY, w:maxX-minX, h:maxY-minY};
     }
 
-    function mapPoint(x, y, normalized, bbox, PAD, W, H, flipY) {
-      if (normalized) {
-        const yy = flipY ? 1 - y : y;
-        return [x * W + PAD, yy * H + PAD];
+    function computeBBox3D(pts) {
+      let minX= Infinity, minY= Infinity, minZ= Infinity;
+      let maxX=-Infinity, maxY=-Infinity, maxZ=-Infinity;
+      for (const [x, y, zRaw] of pts) {
+        const z = Number.isFinite(zRaw) ? zRaw : 0;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
       }
-      // pixel space -> auto-fit to canvas using bbox
-      const sx = W / Math.max(1, bbox.w);
-      const sy = H / Math.max(1, bbox.h);
-      const s = autofitEl.checked ? Math.min(sx, sy) : 1;
-      const cx = (x - bbox.minX) * s + PAD + (W - bbox.w * s) / 2;
-      const cyRaw = (y - bbox.minY) * s + PAD + (H - bbox.h * s) / 2;
-      const cy = flipY ? (H + 2*PAD - cyRaw) : cyRaw; // invert if requested
-      return [cx, cy];
+      return { minX, minY, minZ, maxX, maxY, maxZ, w: maxX - minX, h: maxY - minY, d: maxZ - minZ };
+    }
+
+    function withinUnitRange(bbox, epsilon = 0.01) {
+      if (!bbox) return false;
+      return Number.isFinite(bbox.minX) && Number.isFinite(bbox.maxX) &&
+        Number.isFinite(bbox.minY) && Number.isFinite(bbox.maxY) &&
+        bbox.minX >= -epsilon && bbox.maxX <= 1 + epsilon &&
+        bbox.minY >= -epsilon && bbox.maxY <= 1 + epsilon;
+    }
+
+    function expandBBox(bbox, fraction = 0.08) {
+      if (!bbox || !Number.isFinite(bbox.minX) || !Number.isFinite(bbox.maxX) ||
+          !Number.isFinite(bbox.minY) || !Number.isFinite(bbox.maxY)) {
+        return { minX: -1, maxX: 1, minY: -1, maxY: 1, w: 2, h: 2 };
+      }
+      const padX = Math.max(Math.abs(bbox.w) * fraction, 0.01);
+      const padY = Math.max(Math.abs(bbox.h) * fraction, 0.01);
+      return {
+        minX: bbox.minX - padX,
+        maxX: bbox.maxX + padX,
+        minY: bbox.minY - padY,
+        maxY: bbox.maxY + padY,
+        w: (bbox.w || 0) + padX * 2,
+        h: (bbox.h || 0) + padY * 2
+      };
+    }
+
+    function expandBBox3D(bbox, fraction = 0.08) {
+      if (!bbox || !Number.isFinite(bbox.minX) || !Number.isFinite(bbox.minY) || !Number.isFinite(bbox.minZ)) {
+        return { minX: -1, maxX: 1, minY: -1, maxY: 1, minZ: -1, maxZ: 1, w: 2, h: 2, d: 2 };
+      }
+      const padX = Math.max(Math.abs(bbox.w) * fraction, 0.01);
+      const padY = Math.max(Math.abs(bbox.h) * fraction, 0.01);
+      const padZ = Math.max(Math.abs(bbox.d) * fraction, 0.01);
+      return {
+        minX: bbox.minX - padX,
+        maxX: bbox.maxX + padX,
+        minY: bbox.minY - padY,
+        maxY: bbox.maxY + padY,
+        minZ: bbox.minZ - padZ,
+        maxZ: bbox.maxZ + padZ,
+        w: (bbox.w || 0) + padX * 2,
+        h: (bbox.h || 0) + padY * 2,
+        d: (bbox.d || 0) + padZ * 2
+      };
+    }
+
+    function drawDebugBBox(ctx, bbox) {
+      if (!bbox) return;
+      ctx.save();
+      ctx.strokeStyle = '#22c55e';
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bbox.minX, bbox.minY, Math.max(0, bbox.maxX - bbox.minX), Math.max(0, bbox.maxY - bbox.minY));
+      ctx.restore();
+    }
+
+    function updateBoxExtents(box, x, y, z) {
+      if (x < box.minX) box.minX = x;
+      if (x > box.maxX) box.maxX = x;
+      if (y < box.minY) box.minY = y;
+      if (y > box.maxY) box.maxY = y;
+      if (z < box.minZ) box.minZ = z;
+      if (z > box.maxZ) box.maxZ = z;
+    }
+
+    function safeDim(value) {
+      return Number.isFinite(value) && Math.abs(value) > 1e-5 ? Math.abs(value) : 1e-2;
+    }
+
+    function create2DTransform(bbox, PAD, W, H, flipY, autofit, padding = 0.9) {
+      if (!bbox || !Number.isFinite(bbox.minX) || !Number.isFinite(bbox.maxX)) {
+        return {
+          map: () => [PAD, PAD],
+          screenBBox: null,
+          scale: 1,
+          center: { x: 0, y: 0 }
+        };
+      }
+      const safeW = safeDim(bbox.w);
+      const safeH = safeDim(bbox.h);
+      const scaleBase = Math.min(W / safeW, H / safeH);
+      let scale = scaleBase * padding;
+      if (!autofit) scale = 1;
+      const cx = (bbox.minX + bbox.maxX) / 2;
+      const cy = (bbox.minY + bbox.maxY) / 2;
+      const originX = PAD + W / 2;
+      const originY = PAD + H / 2;
+      const map = (x, y) => {
+        const px = (x - cx) * scale + originX;
+        const signedY = (y - cy) * scale;
+        const py = flipY ? originY - signedY : originY + signedY;
+        return [px, py];
+      };
+
+      const corners = [
+        [bbox.minX, bbox.minY],
+        [bbox.maxX, bbox.minY],
+        [bbox.maxX, bbox.maxY],
+        [bbox.minX, bbox.maxY]
+      ];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const [x, y] of corners) {
+        const [px, py] = map(x, y);
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+      }
+
+      return {
+        map,
+        screenBBox: { minX, minY, maxX, maxY },
+        scale,
+        center: { x: cx, y: cy }
+      };
+    }
+
+    function create3DTransform(bbox, canvasW, canvasH, padding = 0.9) {
+      if (!bbox || !Number.isFinite(bbox.minX)) {
+        return {
+          scale: 1,
+          center: { x: 0, y: 0, z: 0 }
+        };
+      }
+      const safeW = safeDim(bbox.w);
+      const safeH = safeDim(bbox.h);
+      const scaleBase = Math.min(canvasW / safeW, canvasH / safeH);
+      const scale = scaleBase * padding;
+      const center = {
+        x: (bbox.minX + bbox.maxX) / 2,
+        y: (bbox.minY + bbox.maxY) / 2,
+        z: (bbox.minZ + bbox.maxZ) / 2
+      };
+      return { scale, center };
     }
 
     // --- minimal THREE setup ---
@@ -635,7 +1403,8 @@ frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
     function initThree(containerW=960, containerH=540) {
       const scene = new THREE.Scene();
       const camera = new THREE.PerspectiveCamera(45, containerW/containerH, 0.1, 10000);
-      camera.position.set(0, 0, 600);
+      camera.position.set(0, 0, 450);
+      camera.lookAt(0, 0, 0);
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setSize(containerW, containerH);
@@ -653,8 +1422,9 @@ frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
       const light = new THREE.DirectionalLight(0xffffff, 1.0);
       light.position.set(0, 0, 1);
       scene.add(light);
+      scene.add(new THREE.AmbientLight(0xffffff, 0.35));
 
-      __three = { scene, camera, renderer, points: null, lines: null };
+      __three = { scene, camera, renderer, points: null, lines: null, bboxHelper: null };
     }
 
     function ensureGeometries(numPoints, totalSegments) {
@@ -701,25 +1471,46 @@ frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
       return segments;
     }
 
-    // Map 3D point (x,y,z) to 2D with simple perspective scaling around canvas center
-    function mapPoint3D(x, y, z, normalized, bbox, PAD, W, H, flipY) {
-      const [px, py] = mapPoint(x, y, normalized, bbox, PAD, W, H, flipY);
-      const depth = Math.max(-1, Math.min(1, Number(z) || 0)); // clamp z to [-1,1]
-      const cx = PAD + W / 2, cy = PAD + H / 2;
-      const k = 0.25; // perspective strength
-      const s = 1 / (1 + depth * k);
-      return [cx + (px - cx) * s, cy + (py - cy) * s];
-    }
-
-    function drawEdges(edges, pts, normalized, bbox, PAD, W, H, flipY, edgeColor) {
+    function drawEdges(edges, pts, mapper, edgeColor) {
       if (!Array.isArray(edges)) return;
       ctx.beginPath();
       for (const e of edges) {
         if (!Array.isArray(e) || e.length < 2) continue;
         const a = e[0], b = e[1];
         if (!pts[a] || !pts[b]) continue;
-        const p1 = mapPoint3D(pts[a][0], pts[a][1], pts[a][2] || 0, normalized, bbox, PAD, W, H, flipY);
-        const p2 = mapPoint3D(pts[b][0], pts[b][1], pts[b][2] || 0, normalized, bbox, PAD, W, H, flipY);
+        const p1 = mapper(pts[a][0], pts[a][1]);
+        const p2 = mapper(pts[b][0], pts[b][1]);
+        ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+      }
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = edgeColor;
+      ctx.stroke();
+    }
+
+    function updateThreeDebugBox(box) {
+      if (!__three) return;
+      if (box && showBBoxEl && showBBoxEl.checked) {
+        if (!__three.bboxHelper) {
+          __three.bboxHelper = new THREE.Box3Helper(new THREE.Box3(), 0x22c55e);
+          __three.scene.add(__three.bboxHelper);
+        }
+        __three.bboxHelper.box.min.set(box.minX, box.minY, box.minZ);
+        __three.bboxHelper.box.max.set(box.maxX, box.maxY, box.maxZ);
+        __three.bboxHelper.visible = true;
+      } else if (__three && __three.bboxHelper) {
+        __three.bboxHelper.visible = false;
+      }
+    }
+
+    function drawEdges(edges, pts, mapper, edgeColor) {
+      if (!Array.isArray(edges)) return;
+      ctx.beginPath();
+      for (const e of edges) {
+        if (!Array.isArray(e) || e.length < 2) continue;
+        const a = e[0], b = e[1];
+        if (!pts[a] || !pts[b]) continue;
+        const p1 = mapper(pts[a][0], pts[a][1]);
+        const p2 = mapper(pts[b][0], pts[b][1]);
         ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
       }
       ctx.lineWidth = 3;
@@ -742,19 +1533,29 @@ frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
       // merge all sets (pose + hands, etc.)
       const pts = mergePointSets(sets);
       const PAD = 30, W = canvas.width - PAD * 2, H = canvas.height - PAD * 2;
-      const normalized = isNormalized(pts);
-      const bbox = computeBBox(pts);
+      const rawBBox = computeBBox(pts);
+      const renderBBox = expandBBox(rawBBox);
+      const flipY = flipYEl.checked;
+      const autofit = !!(autofitEl && autofitEl.checked);
+      const showBBox = showBBoxEl && showBBoxEl.checked;
+      const transform2D = create2DTransform(renderBBox, PAD, W, H, flipY, autofit);
+      const screenBBox = showBBox ? transform2D.screenBBox : null;
+      const bbox3D = expandBBox3D(computeBBox3D(pts));
+      const threeTransform = create3DTransform(bbox3D, W, H);
 
       // Build skeleton edges based on number of points (MediaPipe structure)
       const edges = buildSkeletonEdges(pts.length);
 
       // ----- 2D canvas draw (under the 3D view) -----
-      drawEdges(edges, pts, normalized, bbox, PAD, W, H, flipYEl.checked, edgeColorEl.value);
+      drawEdges(edges, pts, (x, y) => transform2D.map(x, y), edgeColorEl.value);
       const r2d = Number(ptSizeEl.value) || 4;
       ctx.fillStyle = ptColorEl.value;
-      for (const [x, y, z] of pts) {
-        const [px, py] = mapPoint3D(x, y, z || 0, normalized, bbox, PAD, W, H, flipYEl.checked);
+      for (const [x, y] of pts) {
+        const [px, py] = transform2D.map(x, y);
         ctx.beginPath(); ctx.arc(px, py, r2d, 0, Math.PI * 2); ctx.fill();
+      }
+      if (showBBox && screenBBox) {
+        drawDebugBBox(ctx, screenBBox);
       }
       // ----------------------------------------------
 
@@ -763,19 +1564,27 @@ frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
       const extraSegments = computeExtraSegments3D(pts);
       ensureGeometries(pts.length, edges.length + extraSegments.length);
 
-      const S = 80;                 // scale factor for visibility
-      const flipY = -1;             // MediaPipe to screen Y
-      // const flipZ = 1;            // adjust if you need to invert Z
+      const flipY3D = -1;
+      const transformedPts = new Array(pts.length);
+      const scaledBox = { minX: Infinity, minY: Infinity, minZ: Infinity, maxX: -Infinity, maxY: -Infinity, maxZ: -Infinity };
+      const cameraExtent = Math.max(safeDim(bbox3D.w), safeDim(bbox3D.h), safeDim(bbox3D.d));
+      const cameraDistance = cameraExtent * threeTransform.scale * 1.2 + 250;
+      __three.camera.position.set(0, 0, cameraDistance);
+      __three.camera.lookAt(0, 0, 0);
+      __three.camera.updateProjectionMatrix();
 
       // update point positions
       {
         const arr = __three.points.geometry.attributes.position.array;
         for (let i = 0; i < pts.length; i++) {
-          const x = pts[i][0] * S;
-          const y = pts[i][1] * S * flipY;
-          const z = pts[i][2] * S;
+          const src = pts[i];
+          const tx = (src[0] - threeTransform.center.x) * threeTransform.scale;
+          const ty = (src[1] - threeTransform.center.y) * threeTransform.scale * flipY3D;
+          const tz = ((src[2] || 0) - threeTransform.center.z) * threeTransform.scale;
+          transformedPts[i] = [tx, ty, tz];
+          updateBoxExtents(scaledBox, tx, ty, tz);
           const k = i * 3;
-          arr[k] = x; arr[k+1] = y; arr[k+2] = z;
+          arr[k] = tx; arr[k+1] = ty; arr[k+2] = tz;
         }
         __three.points.geometry.attributes.position.needsUpdate = true;
       }
@@ -786,20 +1595,31 @@ frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
         let k = 0;
         for (let i = 0; i < edges.length; i++) {
           const a = edges[i][0], b = edges[i][1];
-          const ax = pts[a][0]*S, ay = pts[a][1]*S*flipY, az = pts[a][2]*S;
-          const bx = pts[b][0]*S, by = pts[b][1]*S*flipY, bz = pts[b][2]*S;
+          const [ax, ay, az] = transformedPts[a];
+          const [bx, by, bz] = transformedPts[b];
           arr[k] = ax; arr[k+1] = ay; arr[k+2] = az; k += 3;
           arr[k] = bx; arr[k+1] = by; arr[k+2] = bz; k += 3;
         }
-        // write extra segments using coordinates directly
         for (let i = 0; i < extraSegments.length; i++) {
           const A = extraSegments[i][0], B = extraSegments[i][1];
-          const ax = A[0]*S, ay = A[1]*S*flipY, az = A[2]*S;
-          const bx = B[0]*S, by = B[1]*S*flipY, bz = B[2]*S;
+          const ax = (A[0] - threeTransform.center.x) * threeTransform.scale;
+          const ay = (A[1] - threeTransform.center.y) * threeTransform.scale * flipY3D;
+          const az = ((A[2] || 0) - threeTransform.center.z) * threeTransform.scale;
+          const bx = (B[0] - threeTransform.center.x) * threeTransform.scale;
+          const by = (B[1] - threeTransform.center.y) * threeTransform.scale * flipY3D;
+          const bz = ((B[2] || 0) - threeTransform.center.z) * threeTransform.scale;
+          updateBoxExtents(scaledBox, ax, ay, az);
+          updateBoxExtents(scaledBox, bx, by, bz);
           arr[k] = ax; arr[k+1] = ay; arr[k+2] = az; k += 3;
           arr[k] = bx; arr[k+1] = by; arr[k+2] = bz; k += 3;
         }
         __three.lines.geometry.attributes.position.needsUpdate = true;
+      }
+
+      if (!Number.isFinite(scaledBox.minX)) {
+        updateThreeDebugBox(null);
+      } else {
+        updateThreeDebugBox(showBBox ? scaledBox : null);
       }
 
       // render the scene
@@ -808,38 +1628,34 @@ frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
 
     // ---------- events ----------
     // Sentence conversion
-    document.getElementById('convertBtn').addEventListener('click', () => {
-      const sentence = document.getElementById('sentenceInput').value;
-      const result = convertSentenceToGloss(sentence);
-      
-      if (result.glosses.length > 0) {
-        const glossDisplay = result.glosses.map(g => g.toUpperCase()).join(' → ');
-        document.getElementById('glosses').textContent = glossDisplay;
-        document.getElementById('glossDisplay').style.display = 'block';
-        document.getElementById('playSentence').disabled = false;
-        document.getElementById('playSentence').dataset.glosses = JSON.stringify(result.glosses);
-        setStatus(`Converted to ${result.glosses.length} signs`);
-      } else {
-        document.getElementById('glossDisplay').style.display = 'none';
-        document.getElementById('playSentence').disabled = true;
-        setStatus('No valid words found in sentence');
-      }
-      
-      if (result.warnings.length > 0) {
-        document.getElementById('warnings').textContent = result.warnings.join('; ');
-        document.getElementById('warnings').classList.add('show');
-      } else {
-        document.getElementById('warnings').classList.remove('show');
-      }
-    });
+    if (convertBtn) {
+      convertBtn.addEventListener('click', () => {
+        const sentence = sentenceInputEl ? (sentenceInputEl.value || '') : '';
+        runSentenceConversion(sentence);
+      });
+    }
     
-    document.getElementById('sentenceInput').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') document.getElementById('convertBtn').click();
-    });
+    if (sentenceInputEl) {
+      sentenceInputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') runSentenceConversion(sentenceInputEl.value || '');
+      });
+    }
     
     // Real-time dataset preview as user types
-    document.getElementById('sentenceInput').addEventListener('input', (e) => {
+    if (sentenceInputEl) {
+      sentenceInputEl.addEventListener('input', (e) => {
       showDatasetPreview(e.target.value);
+      });
+    }
+
+    document.getElementById('semanticMatches').addEventListener('change', (event) => {
+      if (!event.target.classList.contains('semantic-toggle')) return;
+      const idx = Number(event.target.dataset.token);
+      if (!lastConversion || Number.isNaN(idx)) return;
+      const token = lastConversion.tokens[idx];
+      if (!token) return;
+      token.accepted = event.target.checked;
+      refreshConversionViews();
     });
     
     document.getElementById('playSentence').addEventListener('click', () => {
@@ -880,7 +1696,9 @@ frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
     ptColorEl.addEventListener('input', () => { ptSwatch.style.background = ptColorEl.value; });
     edgeColorEl.addEventListener('input', () => { edgeSwatch.style.background = edgeColorEl.value; });
 
+    attachVoiceButton();
     setStatus('ready - enter a sentence to convert to ISL glosses'); updateHud();
+    refreshConversionViews();
   </script>
 </body>
 </html>
