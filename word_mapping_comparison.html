@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ISL Sentence Player (2D Canvas)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; padding: 16px; }
+    input, button { font-size: 14px; padding: 8px 10px; }
+    input[type="text"] { width: 240px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .muted { color:#666; font-size:12px; margin-top:6px; }
+    .stage { margin-top: 16px; display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }
+    canvas { width: 100%; max-width: 860px; height: auto; border:1px solid #ddd; border-radius: 12px; background:#ffffff; }
+    .panel { min-width: 260px; border:1px solid #eee; border-radius:12px; padding:10px; background:#fafafa; }
+    .hud { font: 12px ui-monospace, monospace; color:#222; background:#f7f7f7; border:1px dashed #ddd; padding:8px; border-radius:8px; margin-top:10px; white-space:pre-wrap; }
+    label { font-size: 13px; display:flex; gap:8px; align-items:center; }
+    .swatch { width:24px; height:24px; border-radius:6px; border:1px solid #ccc; display:inline-block; vertical-align:middle; }
+    .section { border-top: 1px solid #ddd; padding-top: 12px; margin-top: 12px; }
+    #sentenceInput { width: 400px; }
+    #glossDisplay { background: #f0f9ff; border: 1px solid #bae6fd; padding: 8px; border-radius: 6px; font-size: 13px; margin-top: 6px; min-height: 24px; font-family: ui-monospace, monospace; display: none; }
+    #glossDisplay .label { color: #0369a1; font-size: 11px; margin-bottom: 4px; font-weight: 600; }
+    #glossDisplay .glosses { color: #0c4a6e; font-weight: 600; }
+    #warnings { background: #fef3c7; border: 1px solid #fbbf24; color: #92400e; padding: 6px 8px; border-radius: 6px; font-size: 12px; margin-top: 6px; display: none; }
+    #warnings.show { display: block; }
+    #sentenceProgress { color: #059669; font-weight: 600; font-size: 13px; }
+    #datasetPreview { background: #f0fdf4; border: 1px solid #86efac; padding: 8px; border-radius: 6px; font-size: 12px; margin-top: 6px; display: none; }
+    #datasetPreview .label { color: #166534; font-size: 11px; margin-bottom: 4px; font-weight: 600; }
+    #datasetPreview .matches { color: #15803d; font-weight: 500; }
+    #datasetPreview .match-item { display: inline-block; background: #dcfce7; padding: 3px 8px; margin: 2px; border-radius: 4px; border: 1px solid #86efac; }
+    #datasetPreview .no-matches { color: #9ca3af; font-style: italic; }
+    .viewWrap { position: relative; display: inline-block; }
+    .viewBadge { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,0.6); color:#fff; font: 12px ui-monospace, monospace; padding: 2px 6px; border-radius: 6px; z-index: 2; }
+  </style>
+</head>
+<body>
+  <h3>ISL Sentence Player</h3>
+  
+  <!-- Sentence Input Section -->
+  <div>
+    <div class="row">
+      <label>Sentence:
+        <input id="sentenceInput" type="text" placeholder="Enter English sentence (e.g., I am happy today)">
+      </label>
+      <button id="convertBtn">Convert to ISL</button>
+    </div>
+    <div id="datasetPreview">
+      <div class="label">Available in dataset:</div>
+      <div class="matches" id="datasetMatches"></div>
+    </div>
+    <div id="glossDisplay">
+      <div class="label">ISL Glosses:</div>
+      <div class="glosses" id="glosses"></div>
+    </div>
+    <div id="warnings"></div>
+    <div class="row" style="margin-top: 6px;">
+      <button id="playSentence" disabled>Play Sentence</button>
+      <button id="stopSentence" disabled>Stop Sentence</button>
+      <label><input type="checkbox" id="loopSentence"> Loop</label>
+      <span id="sentenceProgress"></span>
+    </div>
+  </div>
+
+  <!-- Single Word Section -->
+  <div class="section">
+    <div class="row">
+      <label>Single Word:
+        <input id="word" type="text" placeholder="e.g. hello" value="hello" />
+      </label>
+      <button id="load">Load</button>
+      <button id="playPause" disabled>Play</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="step" disabled>Step ▶︎</button>
+    </div>
+  </div>
+  
+  <div id="status" class="muted">Status: idle</div>
+
+  <div class="stage">
+    <canvas id="preview" width="960" height="540"></canvas>
+
+    <!-- Render controls -->
+    <div class="panel">
+      <div style="font-weight:600; margin-bottom:6px;">Render Options</div>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <label><input type="checkbox" id="flipY"> Flip Y</label>
+        <label><input type="checkbox" id="autofit" checked> Auto-fit pixels</label>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <label>Point size <input type="range" id="ptSize" min="1" max="8" step="0.5" value="4"></label>
+        <span id="ptSizeVal" class="muted">4</span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <label>Point color <input type="color" id="ptColor" value="#ff1a1a"></label>
+        <span class="swatch" id="ptSwatch" style="background:#ff1a1a"></span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <label>Edge color <input type="color" id="edgeColor" value="#00a3ff"></label>
+        <span class="swatch" id="edgeSwatch" style="background:#00a3ff"></span>
+      </div>
+      <div class="hud" id="hud"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script>
+    // ---------- MediaPipe Skeleton Definitions ----------
+    // Pose landmark indices
+    const POSE = { 
+      L_SHOULDER: 11, R_SHOULDER: 12, 
+      L_ELBOW: 13, R_ELBOW: 14, 
+      L_WRIST: 15, R_WRIST: 16, 
+      L_HIP: 23, R_HIP: 24, 
+      L_KNEE: 25, R_KNEE: 26, 
+      L_ANKLE: 27, R_ANKLE: 28,
+      NOSE: 0, L_EYE: 2, R_EYE: 5, L_EAR: 7, R_EAR: 8,
+      MOUTH_LEFT: 9, MOUTH_RIGHT: 10
+    };
+    
+    // Custom anatomical pose connections (same-side only, human-like)
+    // Uses MediaPipe Pose indices via POSE constants.
+    const CUSTOM_EDGES = [
+      // Head (facial anchors)
+      [POSE.NOSE, POSE.L_EYE], [POSE.L_EYE, POSE.L_EAR],
+      [POSE.NOSE, POSE.R_EYE], [POSE.R_EYE, POSE.R_EAR],
+      // Clavicle
+      [POSE.L_SHOULDER, POSE.R_SHOULDER],
+      // Torso to hips
+      [POSE.L_SHOULDER, POSE.L_HIP], [POSE.R_SHOULDER, POSE.R_HIP],
+      [POSE.L_HIP, POSE.R_HIP],
+      // Left arm chain
+      [POSE.L_SHOULDER, POSE.L_ELBOW], [POSE.L_ELBOW, POSE.L_WRIST],
+      // Left wrist to pose finger tips (thumb/index/pinky proxies)
+      [POSE.L_WRIST, 21], [POSE.L_WRIST, 19], [POSE.L_WRIST, 17],
+      // Right arm chain
+      [POSE.R_SHOULDER, POSE.R_ELBOW], [POSE.R_ELBOW, POSE.R_WRIST],
+      // Right wrist to pose finger tips (thumb/index/pinky proxies)
+      [POSE.R_WRIST, 22], [POSE.R_WRIST, 20], [POSE.R_WRIST, 18],
+      // Legs
+      [POSE.L_HIP, POSE.L_KNEE], [POSE.L_KNEE, POSE.L_ANKLE], [POSE.L_ANKLE, 29],
+      [POSE.R_HIP, POSE.R_KNEE], [POSE.R_KNEE, POSE.R_ANKLE], [POSE.R_ANKLE, 30]
+    ];
+    
+    // Landmark offsets in MediaPipe output (pose=0-32, left_hand=33-53, right_hand=54-74)
+    const LH_OFFSET = 33;
+    const RH_OFFSET = 54;
+    
+    // Build complete skeleton edges
+    function buildSkeletonEdges(numPoints) {
+      // Only use custom pose edges; ignore full hand skeletons to avoid cross-hand links.
+      const valid = CUSTOM_EDGES.filter(([a, b]) => a < numPoints && b < numPoints);
+      
+      // Remove any cross-hand links (left hand indices ↔ right hand indices)
+      // and remove any direct wrist-to-wrist line if present
+      const isLeftHand = (i) => i >= LH_OFFSET && i < RH_OFFSET;
+      const isRightHand = (i) => i >= RH_OFFSET;
+      return valid.filter(([a, b]) => {
+        // no left-hand to right-hand direct connections
+        if ((isLeftHand(a) && isRightHand(b)) || (isLeftHand(b) && isRightHand(a))) return false;
+        // no direct L_WRIST ↔ R_WRIST
+        if ((a === POSE.L_WRIST && b === POSE.R_WRIST) || (a === POSE.R_WRIST && b === POSE.L_WRIST)) return false;
+        return true;
+      });
+    }
+
+    // ---------- ISL Dataset & Grammar Constants ----------
+    const AVAILABLE_WORDS = [
+      'alright', 'beautiful', 'bed', 'bedroom', 'blind', 'cell phone', 'chair', 
+      'clock', 'computer', 'deaf', 'door', 'dream', 'dress', 'fan', 'friday',
+      'good afternoon', 'good morning', 'happy', 'hat', 'hello', 'how are you',
+      'lamp', 'loud', 'monday', 'quiet', 'sad', 'saturday', 'shirt', 'skirt',
+      'suit', 'sunday', 'table', 'thursday', 'today', 'tuesday', 'ugly',
+      'wednesday', 'window'
+    ];
+
+    const WORD_TO_FILENAME = {
+      'alright': 'Alright', 'beautiful': 'Beautiful', 'bed': 'Bed', 'bedroom': 'Bedroom',
+      'blind': 'Blind', 'cell phone': 'Cell phone', 'chair': 'Chair', 'clock': 'Clock',
+      'computer': 'Computer', 'deaf': 'Deaf', 'door': 'Door', 'dream': 'Dream',
+      'dress': 'Dress', 'fan': 'Fan', 'friday': 'Friday', 'good afternoon': 'Good afternoon',
+      'good morning': 'Good Morning', 'happy': 'happy', 'hat': 'Hat', 'hello': 'Hello',
+      'how are you': 'How are you', 'lamp': 'Lamp', 'loud': 'loud', 'monday': 'Monday',
+      'quiet': 'quiet', 'sad': 'sad', 'saturday': 'Saturday', 'shirt': 'Shirt',
+      'skirt': 'Skirt', 'suit': 'Suit', 'sunday': 'Sunday', 'table': 'Table',
+      'thursday': 'Thursday', 'today': 'Today', 'tuesday': 'Tuesday', 'ugly': 'Ugly',
+      'wednesday': 'Wednesday', 'window': 'Window'
+    };
+
+    const MULTI_WORD_SIGNS = {
+      'cell phone': 'cell phone',
+      'good afternoon': 'good afternoon',
+      'good morning': 'good morning',
+      'how are you': 'how are you'
+    };
+
+    const TIME_WORDS = new Set([
+      'today', 'tomorrow', 'yesterday', 'monday', 'tuesday', 'wednesday',
+      'thursday', 'friday', 'saturday', 'sunday'
+    ]);
+
+    const FUNCTION_WORDS = new Set([
+      'a', 'an', 'the', 'is', 'am', 'are', 'was', 'were', 'be', 'been',
+      'will', 'would', 'can', 'could', 'should', 'shall', 'may', 'might',
+      'to', 'at', 'in', 'on', 'of', 'for', 'with', 'from', 'by', 'about'
+    ]);
+
+    // ---------- ISL Grammar Conversion (Longest-Match-First Algorithm) ----------
+    function convertSentenceToGloss(sentence) {
+      const original = sentence.trim();
+      if (!original) return { glosses: [], unmatched: [], warnings: [], original };
+
+      let text = original.toLowerCase().replace(/[.,!?;:]/g, '');
+      
+      // Step 1: Build list of all phrases sorted by length (longest first)
+      const allPhrases = [...AVAILABLE_WORDS].sort((a, b) => b.length - a.length);
+      
+      // Step 2: Greedy matching - find longest matches first
+      const matched = [];
+      const unmatched = [];
+      const words = text.split(/\s+/).filter(w => w.length > 0);
+      let position = 0;
+      
+      while (position < words.length) {
+        let foundMatch = false;
+        
+        // Try to match progressively shorter phrases from current position
+        for (let len = words.length - position; len >= 1; len--) {
+          const candidatePhrase = words.slice(position, position + len).join(' ');
+          
+          if (allPhrases.includes(candidatePhrase)) {
+            matched.push(candidatePhrase);
+            position += len;
+            foundMatch = true;
+            break;
+          }
+        }
+        
+        // If no match found, check if it's a function word (skip silently) or unknown word
+        if (!foundMatch) {
+          const currentWord = words[position];
+          if (!FUNCTION_WORDS.has(currentWord)) {
+            unmatched.push(currentWord);
+          }
+          position++;
+        }
+      }
+      
+      // Step 3: Apply ISL grammar rules to matched phrases
+      const timeWords = [];
+      const otherWords = [];
+      
+      matched.forEach(phrase => {
+        // Check if any word in the phrase is a time word
+        const hasTimeWord = phrase.split(' ').some(word => TIME_WORDS.has(word));
+        if (hasTimeWord) {
+          timeWords.push(phrase);
+        } else {
+          otherWords.push(phrase);
+        }
+      });
+      
+      // Time-Topic-Comment structure
+      const glosses = [...timeWords, ...otherWords];
+      
+      // Build warnings
+      const warnings = [];
+      if (unmatched.length > 0) {
+        warnings.push(`Words not in dataset (skipped): ${unmatched.join(', ')}`);
+      }
+      
+      return { glosses, unmatched, warnings, original };
+    }
+
+    // ---------- Real-time Dataset Preview ----------
+    function showDatasetPreview(sentence) {
+      const previewEl = document.getElementById('datasetPreview');
+      const matchesEl = document.getElementById('datasetMatches');
+      
+      if (!sentence || sentence.trim().length === 0) {
+        previewEl.style.display = 'none';
+        return;
+      }
+      
+      const text = sentence.toLowerCase().replace(/[.,!?;:]/g, '');
+      const words = text.split(/\s+/).filter(w => w.length > 0);
+      
+      if (words.length === 0) {
+        previewEl.style.display = 'none';
+        return;
+      }
+      
+      // Find all possible matches in dataset (longest first)
+      const matches = new Set();
+      const allPhrases = [...AVAILABLE_WORDS].sort((a, b) => b.split(' ').length - a.split(' ').length);
+      
+      for (const phrase of allPhrases) {
+        const phraseWords = phrase.split(' ');
+        // Check if this phrase appears in the sentence
+        for (let i = 0; i <= words.length - phraseWords.length; i++) {
+          const candidate = words.slice(i, i + phraseWords.length).join(' ');
+          if (candidate === phrase) {
+            matches.add(phrase);
+          }
+        }
+      }
+      
+      if (matches.size > 0) {
+        const matchItems = Array.from(matches)
+          .map(m => `<span class="match-item">${m.toUpperCase()}</span>`)
+          .join('');
+        matchesEl.innerHTML = matchItems;
+        previewEl.style.display = 'block';
+      } else {
+        matchesEl.innerHTML = '<span class="no-matches">No matching words in dataset</span>';
+        previewEl.style.display = 'block';
+      }
+    }
+
+    // ---------- Player state ----------
+    let frames = null, fps = 30, raf = null, startTime = 0, frameIndex = 0, pausedAt = 0, playing = false;
+    
+    // Sentence playback state
+    let sentenceMode = {
+      active: false,
+      glosses: [],
+      currentIndex: 0,
+      loop: false
+    };
+
+    const wordEl = document.getElementById('word');
+    const statusEl = document.getElementById('status');
+    const btnLoad = document.getElementById('load');
+    const btnPlayPause = document.getElementById('playPause');
+    const btnStop = document.getElementById('stop');
+    const btnStep = document.getElementById('step');
+    const hudEl = document.getElementById('hud');
+
+    const canvas = document.getElementById('preview');
+    const ctx = canvas.getContext('2d');
+
+    // Render controls
+    const flipYEl = document.getElementById('flipY');
+    const autofitEl = document.getElementById('autofit');
+    const ptSizeEl = document.getElementById('ptSize');
+    const ptSizeValEl = document.getElementById('ptSizeVal');
+    const ptColorEl = document.getElementById('ptColor');
+    const edgeColorEl = document.getElementById('edgeColor');
+    const ptSwatch = document.getElementById('ptSwatch');
+    const edgeSwatch = document.getElementById('edgeSwatch');
+
+    // Ensure a visible "2D" label near the 2D canvas
+    (function ensure2DLabel() {
+      const canvasEl = document.getElementById('preview');
+      if (!canvasEl) return;
+      // If already wrapped, skip
+      if (canvasEl.parentElement && canvasEl.parentElement.classList && canvasEl.parentElement.classList.contains('viewWrap')) return;
+      const wrap = document.createElement('div');
+      wrap.className = 'viewWrap';
+      canvasEl.parentElement.insertBefore(wrap, canvasEl);
+      wrap.appendChild(canvasEl);
+      const badge = document.createElement('div');
+      badge.className = 'viewBadge';
+      badge.textContent = '2D';
+      wrap.appendChild(badge);
+    })();
+
+    // ---------- UI helpers ----------
+    function setStatus(text) { statusEl.textContent = 'Status: ' + text; }
+    function enableControls(ready) {
+      btnPlayPause.disabled = !ready;
+      btnStop.disabled = !ready;
+      btnStep.disabled = !ready;
+    }
+    function updateHud(extra='') {
+      const len = Array.isArray(frames) ? frames.length : 0;
+      hudEl.textContent =
+`frames: ${len}
+fps: ${fps}
+frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
+    }
+
+    // ---------- JSON normalization ----------
+    function normalizeJson(json) {
+      let arr = null, localFps = fps;
+      if (Array.isArray(json)) {
+        arr = json;
+        if (window.__canonicalMeta && typeof window.__canonicalMeta.fps === 'number') {
+          localFps = Number(window.__canonicalMeta.fps) || 30;
+        }
+      } else if (json && typeof json === 'object') {
+        if (Array.isArray(json.frames)) arr = json.frames;
+        if (Array.isArray(json.sequence)) arr = json.sequence;
+        if (typeof json.fps === 'number') localFps = json.fps;
+        if (typeof json.frame_rate === 'number') localFps = json.frame_rate;
+      }
+      return { arr, localFps: Math.max(1, Math.min(120, Number(localFps) || 30)) };
+    }
+
+    // ---------- Sequential Sentence Playback ----------
+    async function loadWordByName(word) {
+      const actualFilename = WORD_TO_FILENAME[word.toLowerCase()] || word;
+      const url = `canonical/${actualFilename}_canonical_median.json`;
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        return { success: true, json, word };
+      } catch (e) {
+        console.error(`Error loading ${word}:`, e);
+        return { success: false, error: e.message, word };
+      }
+    }
+
+    async function playNextWordInSentence() {
+      if (!sentenceMode.active || sentenceMode.currentIndex >= sentenceMode.glosses.length) {
+        // End of sentence
+        if (sentenceMode.loop && sentenceMode.glosses.length > 0) {
+          sentenceMode.currentIndex = 0;
+          await playNextWordInSentence();
+        } else {
+          stopSentencePlayback();
+        }
+        return;
+      }
+
+      const word = sentenceMode.glosses[sentenceMode.currentIndex];
+      const wordDisplay = word.toUpperCase().replace(/\b\w/g, l => l.toUpperCase());
+      
+      document.getElementById('sentenceProgress').textContent = 
+        `Word ${sentenceMode.currentIndex + 1}/${sentenceMode.glosses.length}: ${wordDisplay}`;
+      setStatus(`playing: ${wordDisplay}`);
+
+      const result = await loadWordByName(word);
+      
+      if (result.success) {
+        const { arr, localFps } = normalizeJson(result.json);
+        if (arr && arr.length) {
+          frames = arr;
+          fps = localFps;
+          frameIndex = 0;
+          pausedAt = 0;
+          
+          // Play this word's animation
+          playing = true;
+          startTime = performance.now();
+          raf = requestAnimationFrame(tick);
+          
+          // Wait for animation to complete
+          await waitForWordComplete(arr.length);
+          
+          if (sentenceMode.active) {
+            sentenceMode.currentIndex++;
+            await playNextWordInSentence();
+          }
+        } else {
+          setStatus(`Error: no frames in ${word}`);
+          sentenceMode.currentIndex++;
+          await playNextWordInSentence();
+        }
+      } else {
+        setStatus(`Error loading ${word}: ${result.error}`);
+        sentenceMode.currentIndex++;
+        await playNextWordInSentence();
+      }
+    }
+
+    function waitForWordComplete(totalFrames) {
+      return new Promise(resolve => {
+        const checkComplete = () => {
+          if (!sentenceMode.active || frameIndex >= totalFrames - 1) {
+            resolve();
+          } else {
+            requestAnimationFrame(checkComplete);
+          }
+        };
+        checkComplete();
+      });
+    }
+
+    function startSentencePlayback(glosses) {
+      if (glosses.length === 0) return;
+      
+      sentenceMode.active = true;
+      sentenceMode.glosses = glosses;
+      sentenceMode.currentIndex = 0;
+      sentenceMode.loop = document.getElementById('loopSentence').checked;
+      
+      document.getElementById('playSentence').disabled = true;
+      document.getElementById('stopSentence').disabled = false;
+      
+      playNextWordInSentence();
+    }
+
+    function stopSentencePlayback() {
+      sentenceMode.active = false;
+      sentenceMode.currentIndex = 0;
+      playing = false;
+      if (raf) cancelAnimationFrame(raf);
+      raf = null;
+      
+      document.getElementById('playSentence').disabled = false;
+      document.getElementById('stopSentence').disabled = true;
+      document.getElementById('sentenceProgress').textContent = '';
+      setStatus('sentence playback stopped');
+    }
+
+    async function loadWord() {
+      const w = (wordEl.value || '').trim().toLowerCase();
+      if (!w) { setStatus('error: enter a word'); return; }
+      
+      // Stop any sentence playback
+      if (sentenceMode.active) {
+        stopSentencePlayback();
+      }
+      
+      const url = `canonical/${encodeURIComponent(w)}_canonical_median.json`;
+      setStatus(`loading ${url} …`);
+      stop();
+
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+
+        const { arr, localFps } = normalizeJson(json);
+        if (!arr || !arr.length) throw new Error('no frames found');
+
+        frames = arr; fps = localFps; frameIndex = 0; pausedAt = 0;
+        setStatus(`ready: ${frames.length} frames @ ${fps} fps`);
+        enableControls(true);
+
+        window.applyCanonicalFrame(frames[0], 0); // show first frame
+        updateHud();
+        play();                                   // auto-play so you see motion
+      } catch (e) {
+        frames = null; enableControls(false);
+        setStatus('error: ' + (e && e.message ? e.message : 'load failed'));
+        updateHud();
+      }
+    }
+
+    function tick(t) {
+      if (!playing || !frames || !frames.length) return;
+      const msPerFrame = 1000 / fps;
+      if (!startTime) startTime = t;
+      const elapsed = t - startTime;
+      const nextIdx = Math.floor(elapsed / msPerFrame);
+      if (nextIdx !== frameIndex) frameIndex = nextIdx;
+
+      if (frameIndex >= frames.length) {
+        pause(); setStatus('done'); updateHud(); return;
+      }
+
+      try { window.applyCanonicalFrame(frames[frameIndex], frameIndex); } catch(e) { console.warn(e); }
+      raf = requestAnimationFrame(tick);
+      updateHud();
+    }
+
+    function play() {
+      if (!frames || !frames.length) { setStatus('nothing loaded'); return; }
+      playing = true; btnPlayPause.textContent = 'Pause'; setStatus('playing');
+      startTime = pausedAt > 0 ? performance.now() - pausedAt * (1000 / fps) : performance.now();
+      raf = requestAnimationFrame(tick); updateHud();
+    }
+    function pause() {
+      playing = false; if (raf) cancelAnimationFrame(raf); raf = null;
+      pausedAt = frameIndex; btnPlayPause.textContent = 'Play'; setStatus('paused'); updateHud();
+    }
+    function stop() {
+      playing = false; if (raf) cancelAnimationFrame(raf); raf = null;
+      frameIndex = 0; pausedAt = 0; btnPlayPause.textContent = 'Play'; updateHud();
+    }
+    function stepOnce() {
+      if (!frames || !frames.length) return;
+      pause(); frameIndex = Math.min(frameIndex + 1, frames.length - 1);
+      window.applyCanonicalFrame(frames[frameIndex], frameIndex);
+      setStatus('stepping'); updateHud();
+    }
+
+    // ---------- Renderer (robust + visible) ----------
+    function clearCanvas() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#ffffff';               // bright background so colors pop
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // recurse to collect ANY arrays of {x,y} or [x,y] (even nested)
+    function collectPointArrays(obj, out) {
+      if (!obj) return;
+      if (Array.isArray(obj)) {
+        if (obj.length && Array.isArray(obj[0]) && obj[0].length >= 2 && isFinite(obj[0][0]) && isFinite(obj[0][1])) {
+          out.push(obj.map(p => [Number(p[0]), Number(p[1]), Number(p[2] ?? 0)])); return;
+        }
+        if (obj.length && typeof obj[0] === 'object' && obj[0] && 'x' in obj[0] && 'y' in obj[0]) {
+          out.push(obj.map(p => [Number(p.x), Number(p.y), Number(('z' in p) ? p.z : 0)])); return;
+        }
+        for (const el of obj) collectPointArrays(el, out);
+        return;
+      }
+      if (typeof obj === 'object') {
+        for (const k in obj) collectPointArrays(obj[k], out);
+      }
+    }
+    function mergePointSets(pointSets) {
+      const merged = []; for (const arr of pointSets) for (const p of arr) merged.push(p); return merged;
+    }
+    function isNormalized(pts) {
+      let hits = 0; for (let i = 0; i < Math.min(10, pts.length); i++) { const [x,y]=pts[i]; if (x>=0&&x<=1&&y>=0&&y<=1) hits++; }
+      return hits >= Math.min(3, pts.length);
+    }
+    function computeBBox(pts) {
+      let minX= Infinity, minY= Infinity, maxX=-Infinity, maxY=-Infinity;
+      for (const [x,y] of pts) { if (x<minX)minX=x; if (y<minY)minY=y; if (x>maxX)maxX=x; if (y>maxY)maxY=y; }
+      return {minX, minY, maxX, maxY, w:maxX-minX, h:maxY-minY};
+    }
+
+    function mapPoint(x, y, normalized, bbox, PAD, W, H, flipY) {
+      if (normalized) {
+        const yy = flipY ? 1 - y : y;
+        return [x * W + PAD, yy * H + PAD];
+      }
+      // pixel space -> auto-fit to canvas using bbox
+      const sx = W / Math.max(1, bbox.w);
+      const sy = H / Math.max(1, bbox.h);
+      const s = autofitEl.checked ? Math.min(sx, sy) : 1;
+      const cx = (x - bbox.minX) * s + PAD + (W - bbox.w * s) / 2;
+      const cyRaw = (y - bbox.minY) * s + PAD + (H - bbox.h * s) / 2;
+      const cy = flipY ? (H + 2*PAD - cyRaw) : cyRaw; // invert if requested
+      return [cx, cy];
+    }
+
+    // --- minimal THREE setup ---
+    let __three = null;
+    function initThree(containerW=960, containerH=540) {
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(45, containerW/containerH, 0.1, 10000);
+      camera.position.set(0, 0, 600);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(containerW, containerH);
+      const stage = document.querySelector('.stage');
+      const panelRef = document.querySelector('.panel');
+      const wrap = document.createElement('div');
+      wrap.className = 'viewWrap';
+      stage.insertBefore(wrap, panelRef);
+      wrap.appendChild(renderer.domElement);
+      const badge = document.createElement('div');
+      badge.className = 'viewBadge';
+      badge.textContent = '3D';
+      wrap.appendChild(badge);
+
+      const light = new THREE.DirectionalLight(0xffffff, 1.0);
+      light.position.set(0, 0, 1);
+      scene.add(light);
+
+      __three = { scene, camera, renderer, points: null, lines: null };
+    }
+
+    function ensureGeometries(numPoints, totalSegments) {
+      if (!__three.points || __three.points.geometry.attributes.position.count !== numPoints) {
+        if (__three.points) __three.scene.remove(__three.points);
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(numPoints * 3), 3));
+        const m = new THREE.PointsMaterial({ color: 0xff1a1a, size: 6, sizeAttenuation: false });
+        __three.points = new THREE.Points(g, m);
+        __three.scene.add(__three.points);
+      }
+      const lineVerts = totalSegments * 2;
+      if (!__three.lines || __three.lines.geometry.attributes.position.count !== lineVerts) {
+        if (__three.lines) __three.scene.remove(__three.lines);
+        const gL = new THREE.BufferGeometry();
+        gL.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(lineVerts * 3), 3));
+        const mL = new THREE.LineBasicMaterial({ color: 0x00a3ff, linewidth: 2 });
+        __three.lines = new THREE.LineSegments(gL, mL);
+        __three.scene.add(__three.lines);
+      }
+    }
+
+    // Compute extra anatomical 3D segments not present as raw landmark pairs
+    function computeExtraSegments3D(pts) {
+      const segments = [];
+      const get = (idx) => (pts[idx] ? pts[idx] : null);
+      const LS = POSE.L_SHOULDER, RS = POSE.R_SHOULDER;
+      const LH = POSE.L_HIP, RH = POSE.R_HIP;
+      const NOSE = POSE.NOSE;
+      const pLS = get(LS), pRS = get(RS);
+      const pLH = get(LH), pRH = get(RH);
+      // Neck at midpoint of shoulders
+      if (pLS && pRS) {
+        const neck = [(pLS[0] + pRS[0]) / 2, (pLS[1] + pRS[1]) / 2, (pLS[2] + pRS[2]) / 2];
+        segments.push([neck, pLS], [neck, pRS]); // neck→left/right shoulder
+        const pNose = get(NOSE);
+        if (pNose) segments.push([pNose, neck]); // optional aesthetic nose→neck
+      }
+      // Hip center at midpoint of hips
+      if (pLH && pRH) {
+        const hipC = [(pLH[0] + pRH[0]) / 2, (pLH[1] + pRH[1]) / 2, (pLH[2] + pRH[2]) / 2];
+        segments.push([hipC, pLH], [hipC, pRH]); // hip center→left/right hip
+      }
+      return segments;
+    }
+
+    // Map 3D point (x,y,z) to 2D with simple perspective scaling around canvas center
+    function mapPoint3D(x, y, z, normalized, bbox, PAD, W, H, flipY) {
+      const [px, py] = mapPoint(x, y, normalized, bbox, PAD, W, H, flipY);
+      const depth = Math.max(-1, Math.min(1, Number(z) || 0)); // clamp z to [-1,1]
+      const cx = PAD + W / 2, cy = PAD + H / 2;
+      const k = 0.25; // perspective strength
+      const s = 1 / (1 + depth * k);
+      return [cx + (px - cx) * s, cy + (py - cy) * s];
+    }
+
+    function drawEdges(edges, pts, normalized, bbox, PAD, W, H, flipY, edgeColor) {
+      if (!Array.isArray(edges)) return;
+      ctx.beginPath();
+      for (const e of edges) {
+        if (!Array.isArray(e) || e.length < 2) continue;
+        const a = e[0], b = e[1];
+        if (!pts[a] || !pts[b]) continue;
+        const p1 = mapPoint3D(pts[a][0], pts[a][1], pts[a][2] || 0, normalized, bbox, PAD, W, H, flipY);
+        const p2 = mapPoint3D(pts[b][0], pts[b][1], pts[b][2] || 0, normalized, bbox, PAD, W, H, flipY);
+        ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+      }
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = edgeColor;
+      ctx.stroke();
+    }
+
+    window.applyCanonicalFrame = function(frame, i) {
+      clearCanvas();
+
+      // collect points (robust, nested)
+      const sets = []; collectPointArrays(frame, sets);
+      if (!sets.length) {
+        ctx.fillStyle = '#111'; ctx.font = '14px ui-monospace, monospace';
+        ctx.fillText('No 2D points detected in this frame.', 12, 22);
+        if (i % 10 === 0) console.log('Frame (no 2D points)', i, frame);
+        return;
+      }
+
+      // merge all sets (pose + hands, etc.)
+      const pts = mergePointSets(sets);
+      const PAD = 30, W = canvas.width - PAD * 2, H = canvas.height - PAD * 2;
+      const normalized = isNormalized(pts);
+      const bbox = computeBBox(pts);
+
+      // Build skeleton edges based on number of points (MediaPipe structure)
+      const edges = buildSkeletonEdges(pts.length);
+
+      // ----- 2D canvas draw (under the 3D view) -----
+      drawEdges(edges, pts, normalized, bbox, PAD, W, H, flipYEl.checked, edgeColorEl.value);
+      const r2d = Number(ptSizeEl.value) || 4;
+      ctx.fillStyle = ptColorEl.value;
+      for (const [x, y, z] of pts) {
+        const [px, py] = mapPoint3D(x, y, z || 0, normalized, bbox, PAD, W, H, flipYEl.checked);
+        ctx.beginPath(); ctx.arc(px, py, r2d, 0, Math.PI * 2); ctx.fill();
+      }
+      // ----------------------------------------------
+
+      // 3D render path with THREE.js
+      if (!__three) initThree(canvas.width, canvas.height);
+      const extraSegments = computeExtraSegments3D(pts);
+      ensureGeometries(pts.length, edges.length + extraSegments.length);
+
+      const S = 80;                 // scale factor for visibility
+      const flipY = -1;             // MediaPipe to screen Y
+      // const flipZ = 1;            // adjust if you need to invert Z
+
+      // update point positions
+      {
+        const arr = __three.points.geometry.attributes.position.array;
+        for (let i = 0; i < pts.length; i++) {
+          const x = pts[i][0] * S;
+          const y = pts[i][1] * S * flipY;
+          const z = pts[i][2] * S;
+          const k = i * 3;
+          arr[k] = x; arr[k+1] = y; arr[k+2] = z;
+        }
+        __three.points.geometry.attributes.position.needsUpdate = true;
+      }
+
+      // update line segments: base skeleton edges + extra anatomical segments
+      {
+        const arr = __three.lines.geometry.attributes.position.array;
+        let k = 0;
+        for (let i = 0; i < edges.length; i++) {
+          const a = edges[i][0], b = edges[i][1];
+          const ax = pts[a][0]*S, ay = pts[a][1]*S*flipY, az = pts[a][2]*S;
+          const bx = pts[b][0]*S, by = pts[b][1]*S*flipY, bz = pts[b][2]*S;
+          arr[k] = ax; arr[k+1] = ay; arr[k+2] = az; k += 3;
+          arr[k] = bx; arr[k+1] = by; arr[k+2] = bz; k += 3;
+        }
+        // write extra segments using coordinates directly
+        for (let i = 0; i < extraSegments.length; i++) {
+          const A = extraSegments[i][0], B = extraSegments[i][1];
+          const ax = A[0]*S, ay = A[1]*S*flipY, az = A[2]*S;
+          const bx = B[0]*S, by = B[1]*S*flipY, bz = B[2]*S;
+          arr[k] = ax; arr[k+1] = ay; arr[k+2] = az; k += 3;
+          arr[k] = bx; arr[k+1] = by; arr[k+2] = bz; k += 3;
+        }
+        __three.lines.geometry.attributes.position.needsUpdate = true;
+      }
+
+      // render the scene
+      __three.renderer.render(__three.scene, __three.camera);
+    };
+
+    // ---------- events ----------
+    // Sentence conversion
+    document.getElementById('convertBtn').addEventListener('click', () => {
+      const sentence = document.getElementById('sentenceInput').value;
+      const result = convertSentenceToGloss(sentence);
+      
+      if (result.glosses.length > 0) {
+        const glossDisplay = result.glosses.map(g => g.toUpperCase()).join(' → ');
+        document.getElementById('glosses').textContent = glossDisplay;
+        document.getElementById('glossDisplay').style.display = 'block';
+        document.getElementById('playSentence').disabled = false;
+        document.getElementById('playSentence').dataset.glosses = JSON.stringify(result.glosses);
+        setStatus(`Converted to ${result.glosses.length} signs`);
+      } else {
+        document.getElementById('glossDisplay').style.display = 'none';
+        document.getElementById('playSentence').disabled = true;
+        setStatus('No valid words found in sentence');
+      }
+      
+      if (result.warnings.length > 0) {
+        document.getElementById('warnings').textContent = result.warnings.join('; ');
+        document.getElementById('warnings').classList.add('show');
+      } else {
+        document.getElementById('warnings').classList.remove('show');
+      }
+    });
+    
+    document.getElementById('sentenceInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('convertBtn').click();
+    });
+    
+    // Real-time dataset preview as user types
+    document.getElementById('sentenceInput').addEventListener('input', (e) => {
+      showDatasetPreview(e.target.value);
+    });
+    
+    document.getElementById('playSentence').addEventListener('click', () => {
+      const glosses = JSON.parse(document.getElementById('playSentence').dataset.glosses || '[]');
+      startSentencePlayback(glosses);
+    });
+    
+    document.getElementById('stopSentence').addEventListener('click', () => {
+      stopSentencePlayback();
+    });
+    
+    // Single word playback
+    btnLoad.addEventListener('click', loadWord);
+    btnPlayPause.addEventListener('click', () => (playing ? pause() : play()));
+    btnStop.addEventListener('click', stop);
+    btnStep.addEventListener('click', stepOnce);
+    wordEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadWord(); });
+    window.addEventListener('keydown', (e) => {
+  const active = document.activeElement;
+  const isTyping = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+
+  // ⏯️ Space toggles only when not typing in a field
+  if (e.key === ' ' && !isTyping) {
+    e.preventDefault();
+    if (!btnPlayPause.disabled) playing ? pause() : play();
+  }
+
+  // ▶️ Step with right arrow (same rule)
+  if (e.key === 'ArrowRight' && !isTyping) {
+    e.preventDefault();
+    stepOnce();
+  }
+});
+
+
+    // live UI updates
+    ptSizeEl.addEventListener('input', () => { ptSizeValEl.textContent = ptSizeEl.value; });
+    ptColorEl.addEventListener('input', () => { ptSwatch.style.background = ptColorEl.value; });
+    edgeColorEl.addEventListener('input', () => { edgeSwatch.style.background = edgeColorEl.value; });
+
+    setStatus('ready - enter a sentence to convert to ISL glosses'); updateHud();
+  </script>
+</body>
+</html>

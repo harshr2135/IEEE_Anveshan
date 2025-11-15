@@ -1,0 +1,237 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Sign Avatar Player — Full Body Mapping</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0f14;color:#e6edf3;font-family:system-ui,sans-serif}
+  #ui{position:fixed;top:10px;left:10px;background:#0f172a;padding:12px 14px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:10;max-width:920px}
+  #ui .row{display:flex;align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap}
+  button{background:#1f2937;color:#e6edf3;border:0;padding:6px 10px;border-radius:8px;cursor:pointer}
+  button:hover{background:#374151}
+  input[type="range"]{width:170px}
+  .label{font-size:12px;opacity:.9;margin-right:6px}
+  #status{position:fixed;right:12px;top:12px;background:#111827;padding:8px 10px;border-radius:10px;font-size:12px;opacity:.95;max-width:60ch}
+  .pill{padding:2px 8px;border-radius:999px;background:#0b1220;border:1px solid #1f2937;font-size:12px}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div class="row">
+    <button id="play">Play</button>
+    <button id="pause">Pause</button>
+    <span class="label">Speed</span>
+    <input id="speed" type="range" min="0.1" max="1.0" step="0.05" value="0.6">
+    <span id="speedVal" class="pill">0.60×</span>
+  </div>
+  <div class="row">
+    <span class="label">Load Motion (JSON)</span>
+    <input id="fileMotion" type="file" accept=".json">
+    <span id="motionName" class="pill">none</span>
+  </div>
+  <div class="row">
+    <span class="label">Load Avatar (GLB)</span>
+    <input id="fileAvatar" type="file" accept=".glb,.gltf">
+    <button id="default">Load Y-Bot</button>
+    <span id="avatarName" class="pill">none</span>
+  </div>
+  <div class="row" style="font-size:12px;opacity:.85">
+    Tip: Load avatar first, then motion. Cyan figure = debug overlay.
+  </div>
+</div>
+<div id="status">Waiting…</div>
+<canvas id="c"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+const el=id=>document.getElementById(id);
+const setStatus=m=>el('status').textContent=m;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const safe=(p)=>({x:+p?.x||0,y:+p?.y||0,z:+p?.z||0});
+const LH=33,RH=54;
+
+let scene,camera,renderer,grid;
+let avatar,skinned,skeleton,bones={},found=0;
+let frames=[],K=0,T=0,t=0,fps=60,speed=0.6,playing=false;
+let pointsGeom,points,linesGeom,lines;
+const P={L_SH:11,R_SH:12,L_EL:13,R_EL:14,L_WR:15,R_WR:16,L_HIP:23,R_HIP:24,L_KNEE:25,R_KNEE:26,L_ANK:27,R_ANK:28,NOSE:0};
+const orbit={r:2.8,theta:1.1,phi:0.9,drag:false,px:0,py:0};
+function updateCam(){
+ const {r,theta,phi}=orbit;
+ camera.position.set(r*Math.sin(theta)*Math.cos(phi),r*Math.cos(theta),r*Math.sin(theta)*Math.sin(phi));
+ camera.lookAt(0,1,0);
+}
+
+init();
+function init(){
+  const canvas = document.getElementById('c');
+  renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio||1));
+
+  // ✅ Create camera before calling resize()
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0f14);
+  camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.01, 100);
+  updateCam();  // sets initial position
+
+  resize();  // safe now
+
+  window.addEventListener('resize', resize);
+  const light=new THREE.DirectionalLight(0xffffff,1);light.position.set(1,2,2);
+  scene.add(light,new THREE.AmbientLight(0xffffff,0.5));
+  grid=new THREE.GridHelper(4,40,0x1f2937,0x111827);grid.position.y=0;scene.add(grid);
+
+  // orbit handling
+  window.addEventListener('mousedown',e=>{orbit.drag=true;orbit.px=e.clientX;orbit.py=e.clientY;});
+  window.addEventListener('mouseup',()=>orbit.drag=false);
+  window.addEventListener('mousemove',e=>{
+    if(!orbit.drag)return;
+    const dx=(e.clientX-orbit.px)/window.innerWidth, dy=(e.clientY-orbit.py)/window.innerHeight;
+    orbit.px=e.clientX; orbit.py=e.clientY;
+    orbit.phi -= dx*Math.PI; orbit.theta = clamp(orbit.theta + dy*Math.PI, 0.1, Math.PI-0.1);
+    updateCam();
+  });
+  window.addEventListener('wheel',e=>{
+    orbit.r = clamp(orbit.r + (e.deltaY>0?0.25:-0.25),0.8,10);
+    updateCam();
+  },{passive:true});
+
+  // UI
+  el('play').onclick=()=>{playing=true;};
+  el('pause').onclick=()=>{playing=false;};
+  el('speed').oninput=e=>{speed=+e.target.value;el('speedVal').textContent=speed.toFixed(2)+'×';};
+  el('fileAvatar').onchange=e=>{const f=e.target.files[0];if(f)loadAvatar(URL.createObjectURL(f),f.name);}
+  eel('default').onclick = () => loadAvatar(
+  'https://cdn.jsdelivr.net/gh/KhronosGroup/glTF-Sample-Models@master/2.0/Xbot/glTF-Binary/Xbot.glb',
+  'X-Bot'
+);
+
+
+
+  el('fileMotion').onchange=async e=>{const f=e.target.files[0];if(f)loadMotion(await f.text(),f.name);}
+
+  animate();
+}
+
+
+function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
+function buildOverlay(K){
+ const pos=new Float32Array(K*3);
+ pointsGeom=new THREE.BufferGeometry();pointsGeom.setAttribute('position',new THREE.BufferAttribute(pos,3));
+ points=new THREE.Points(pointsGeom,new THREE.PointsMaterial({size:0.02,color:0x9ec5fe}));
+ scene.add(points);
+ const edges=[[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
+ const all=edges.filter(([a,b])=>a<K&&b<K);
+ const lpos=new Float32Array(all.length*6);
+ linesGeom=new THREE.BufferGeometry();linesGeom.setAttribute('position',new THREE.BufferAttribute(lpos,3));
+ linesGeom.userData.edges=all;
+ lines=new THREE.LineSegments(linesGeom,new THREE.LineBasicMaterial({color:0x76a7ff}));
+ scene.add(lines);
+}
+
+function loadAvatar(url,name){
+ const loader=new THREE.GLTFLoader();
+ loader.load(url,g=>{
+  if(avatar)scene.remove(avatar);
+  avatar=g.scene;avatar.scale.set(0.6,0.6,0.6);
+  avatar.position.y=0;
+  avatar.traverse(o=>{if(o.isSkinnedMesh&&!skinned)skinned=o;});
+  if(!skinned){scene.add(avatar);setStatus('Loaded (no rig)');return;}
+  skeleton=skinned.skeleton;
+  const idx=new Map(skeleton.bones.map(b=>[b.name.toLowerCase(),b]));
+  const pick=(...c)=>{for(const s of c){const k=s.toLowerCase();if(idx.has(k))return idx.get(k);const f=skeleton.bones.find(b=>b.name.toLowerCase().includes(k));if(f)return f;}return null;};
+  // === BODY MAPPING ===
+  bones.Hips=pick('Hips','mixamorig:Hips','pelvis');
+  bones.Spine=pick('Spine','mixamorig:Spine');
+  bones.Chest=pick('Spine2','mixamorig:Spine2','chest');
+  bones.Neck=pick('Neck','mixamorig:Neck');
+  bones.Head=pick('Head','mixamorig:Head');
+
+  bones.LeftShoulder=pick('LeftShoulder','mixamorig:LeftShoulder');
+  bones.RightShoulder=pick('RightShoulder','mixamorig:RightShoulder');
+  bones.LeftArm=pick('LeftArm','mixamorig:LeftArm','upper_arm.L');
+  bones.RightArm=pick('RightArm','mixamorig:RightArm','upper_arm.R');
+  bones.LeftForeArm=pick('LeftForeArm','mixamorig:LeftForeArm','lower_arm.L');
+  bones.RightForeArm=pick('RightForeArm','mixamorig:RightForeArm','lower_arm.R');
+  bones.LeftHand=pick('LeftHand','mixamorig:LeftHand');
+  bones.RightHand=pick('RightHand','mixamorig:RightHand');
+
+  bones.LeftUpLeg=pick('LeftUpLeg','mixamorig:LeftUpLeg');
+  bones.RightUpLeg=pick('RightUpLeg','mixamorig:RightUpLeg');
+  bones.LeftLeg=pick('LeftLeg','mixamorig:LeftLeg');
+  bones.RightLeg=pick('RightLeg','mixamorig:RightLeg');
+  bones.LeftFoot=pick('LeftFoot','mixamorig:LeftFoot');
+  bones.RightFoot=pick('RightFoot','mixamorig:RightFoot');
+
+  found=Object.values(bones).filter(Boolean).length;
+  scene.add(avatar);
+  setStatus(`Avatar loaded: ${name} • Bones found: ${found}`);
+ },undefined,err=>setStatus('Avatar load error: '+err.message));
+}
+
+function loadMotion(text,name){
+ try{
+  const obj=JSON.parse(text);
+  const arr=obj.frames||obj;
+  frames=arr.map((fr,i)=>({frame:i,points:fr.points.map(p=>safe(p))}));
+  K=frames[0].points.length;T=frames.length;t=0;playing=true;
+  if(points)scene.remove(points);if(lines)scene.remove(lines);
+  buildOverlay(K);setStatus(`Motion loaded: ${name} • ${T} frames`);
+ }catch(e){setStatus('Motion parse error');}
+}
+
+function W(pts,i){if(i>=K)return new THREE.Vector3();const p=pts[i];return new THREE.Vector3(p.x,-p.y,-p.z);}
+function aim(bone,from,to){
+ if(!bone||!bone.parent)return;
+ const parent=bone.parent;
+ const f=parent.worldToLocal(from.clone()),t=parent.worldToLocal(to.clone());
+ const dir=t.clone().sub(f).normalize();
+ const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),dir);
+ bone.quaternion.copy(q);
+ bone.updateMatrixWorld(true);
+}
+
+function applyFrame(fi){
+ if(!frames.length)return;
+ fi=Math.floor(clamp(fi,0,T-1));const pts=frames[fi].points;
+ if(points){
+   const pos=pointsGeom.attributes.position.array;
+   for(let i=0;i<K;i++){const p=W(pts,i);pos[3*i]=p.x;pos[3*i+1]=p.y;pos[3*i+2]=p.z;}
+   pointsGeom.attributes.position.needsUpdate=true;
+   const edges=linesGeom.userData.edges,lpos=linesGeom.attributes.position.array;let j=0;
+   for(const [a,b] of edges){const A=W(pts,a),B=W(pts,b);
+     lpos[j++]=A.x;lpos[j++]=A.y;lpos[j++]=A.z;
+     lpos[j++]=B.x;lpos[j++]=B.y;lpos[j++]=B.z;}
+   linesGeom.attributes.position.needsUpdate=true;
+ }
+ if(skeleton){
+  const Ls=W(pts,P.L_SH),Le=W(pts,P.L_EL),Lw=W(pts,P.L_WR);
+  const Rs=W(pts,P.R_SH),Re=W(pts,P.R_EL),Rw=W(pts,P.R_WR);
+  const Lh=W(pts,P.L_HIP),Lk=W(pts,P.L_KNEE),La=W(pts,P.L_ANK);
+  const Rh=W(pts,P.R_HIP),Rk=W(pts,P.R_KNEE),Ra=W(pts,P.R_ANK);
+  const nose=W(pts,P.NOSE);
+  aim(bones.LeftArm||bones.LeftShoulder,Ls,Le);
+  aim(bones.LeftForeArm,Le,Lw);
+  aim(bones.LeftHand,Lw,Lw.clone().add(Lw.clone().sub(Le)));
+  aim(bones.RightArm||bones.RightShoulder,Rs,Re);
+  aim(bones.RightForeArm,Re,Rw);
+  aim(bones.RightHand,Rw,Rw.clone().add(Rw.clone().sub(Re)));
+  aim(bones.LeftUpLeg,Lh,Lk);aim(bones.LeftLeg,Lk,La);
+  aim(bones.RightUpLeg,Rh,Rk);aim(bones.RightLeg,Rk,Ra);
+  // orient head roughly facing nose direction
+  if(bones.Head&&bones.Neck){
+    const neck=bones.Neck.getWorldPosition(new THREE.Vector3());
+    aim(bones.Head,neck,nose);
+  }
+ }
+}
+
+function animate(){
+ requestAnimationFrame(animate);
+ if(playing&&frames.length){t+=speed;if(t>=T)t=0;applyFrame(t);}
+ renderer.render(scene,camera);
+}
+</script>
+</body>
+</html>

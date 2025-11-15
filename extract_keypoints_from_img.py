@@ -22,7 +22,7 @@ import cv2
 import mediapipe as mp
 
 # Change this to your image root
-DATA_IN = "C:/Users/Jyothi/ISL_Anveshan/data"
+DATA_IN = "C:/Users/Jyothi/Downloads/archive (1)/Indian"
 DATA_OUT = "data_np"
 
 # Landmark counts (fixed by MediaPipe)

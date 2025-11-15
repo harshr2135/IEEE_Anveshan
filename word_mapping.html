@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ISL Sentence Player (2D Canvas)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; padding: 16px; }
+    input, button { font-size: 14px; padding: 8px 10px; }
+    input[type="text"] { width: 240px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .muted { color:#666; font-size:12px; margin-top:6px; }
+    .stage { margin-top: 16px; display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }
+    canvas { width: 100%; max-width: 860px; height: auto; border:1px solid #ddd; border-radius: 12px; background:#ffffff; }
+    .panel { min-width: 260px; border:1px solid #eee; border-radius:12px; padding:10px; background:#fafafa; }
+    .hud { font: 12px ui-monospace, monospace; color:#222; background:#f7f7f7; border:1px dashed #ddd; padding:8px; border-radius:8px; margin-top:10px; white-space:pre-wrap; }
+    label { font-size: 13px; display:flex; gap:8px; align-items:center; }
+    .swatch { width:24px; height:24px; border-radius:6px; border:1px solid #ccc; display:inline-block; vertical-align:middle; }
+    .section { border-top: 1px solid #ddd; padding-top: 12px; margin-top: 12px; }
+    #sentenceInput { width: 400px; }
+    #glossDisplay { background: #f0f9ff; border: 1px solid #bae6fd; padding: 8px; border-radius: 6px; font-size: 13px; margin-top: 6px; min-height: 24px; font-family: ui-monospace, monospace; display: none; }
+    #glossDisplay .label { color: #0369a1; font-size: 11px; margin-bottom: 4px; font-weight: 600; }
+    #glossDisplay .glosses { color: #0c4a6e; font-weight: 600; }
+    #warnings { background: #fef3c7; border: 1px solid #fbbf24; color: #92400e; padding: 6px 8px; border-radius: 6px; font-size: 12px; margin-top: 6px; display: none; }
+    #warnings.show { display: block; }
+    #sentenceProgress { color: #059669; font-weight: 600; font-size: 13px; }
+    #datasetPreview { background: #f0fdf4; border: 1px solid #86efac; padding: 8px; border-radius: 6px; font-size: 12px; margin-top: 6px; display: none; }
+    #datasetPreview .label { color: #166534; font-size: 11px; margin-bottom: 4px; font-weight: 600; }
+    #datasetPreview .matches { color: #15803d; font-weight: 500; }
+    #datasetPreview .match-item { display: inline-block; background: #dcfce7; padding: 3px 8px; margin: 2px; border-radius: 4px; border: 1px solid #86efac; }
+    #datasetPreview .no-matches { color: #9ca3af; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h3>ISL Sentence Player</h3>
+  
+  <!-- Sentence Input Section -->
+  <div>
+    <div class="row">
+      <label>Sentence:
+        <input id="sentenceInput" type="text" placeholder="Enter English sentence (e.g., I am happy today)">
+      </label>
+      <button id="convertBtn">Convert to ISL</button>
+    </div>
+    <div id="datasetPreview">
+      <div class="label">Available in dataset:</div>
+      <div class="matches" id="datasetMatches"></div>
+    </div>
+    <div id="glossDisplay">
+      <div class="label">ISL Glosses:</div>
+      <div class="glosses" id="glosses"></div>
+    </div>
+    <div id="warnings"></div>
+    <div class="row" style="margin-top: 6px;">
+      <button id="playSentence" disabled>Play Sentence</button>
+      <button id="stopSentence" disabled>Stop Sentence</button>
+      <label><input type="checkbox" id="loopSentence"> Loop</label>
+      <span id="sentenceProgress"></span>
+    </div>
+  </div>
+
+  <!-- Single Word Section -->
+  <div class="section">
+    <div class="row">
+      <label>Single Word:
+        <input id="word" type="text" placeholder="e.g. hello" value="hello" />
+      </label>
+      <button id="load">Load</button>
+      <button id="playPause" disabled>Play</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="step" disabled>Step ▶︎</button>
+    </div>
+  </div>
+  
+  <div id="status" class="muted">Status: idle</div>
+
+  <div class="stage">
+    <canvas id="preview" width="960" height="540"></canvas>
+
+    <!-- Render controls -->
+    <div class="panel">
+      <div style="font-weight:600; margin-bottom:6px;">Render Options</div>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <label><input type="checkbox" id="flipY"> Flip Y</label>
+        <label><input type="checkbox" id="autofit" checked> Auto-fit pixels</label>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <label>Point size <input type="range" id="ptSize" min="1" max="8" step="0.5" value="4"></label>
+        <span id="ptSizeVal" class="muted">4</span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <label>Point color <input type="color" id="ptColor" value="#ff1a1a"></label>
+        <span class="swatch" id="ptSwatch" style="background:#ff1a1a"></span>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+        <label>Edge color <input type="color" id="edgeColor" value="#00a3ff"></label>
+        <span class="swatch" id="edgeSwatch" style="background:#00a3ff"></span>
+      </div>
+      <div class="hud" id="hud"></div>
+    </div>
+  </div>
+
+  <script>
+    // ---------- MediaPipe Skeleton Definitions ----------
+    // Pose landmark indices
+    const POSE = { 
+      L_SHOULDER: 11, R_SHOULDER: 12, 
+      L_ELBOW: 13, R_ELBOW: 14, 
+      L_WRIST: 15, R_WRIST: 16, 
+      L_HIP: 23, R_HIP: 24, 
+      L_KNEE: 25, R_KNEE: 26, 
+      L_ANKLE: 27, R_ANKLE: 28,
+      NOSE: 0, L_EYE: 2, R_EYE: 5, L_EAR: 7, R_EAR: 8,
+      MOUTH_LEFT: 9, MOUTH_RIGHT: 10
+    };
+    
+    // Pose skeleton connections
+    const POSE_EDGES = [
+      // Face
+      [POSE.NOSE, POSE.L_EYE], [POSE.L_EYE, POSE.L_EAR],
+      [POSE.NOSE, POSE.R_EYE], [POSE.R_EYE, POSE.R_EAR],
+      [POSE.NOSE, POSE.MOUTH_LEFT], [POSE.NOSE, POSE.MOUTH_RIGHT],
+      // Torso
+      [POSE.L_SHOULDER, POSE.R_SHOULDER],
+      [POSE.L_SHOULDER, POSE.L_HIP], [POSE.R_SHOULDER, POSE.R_HIP],
+      [POSE.L_HIP, POSE.R_HIP],
+      // Arms
+      [POSE.L_SHOULDER, POSE.L_ELBOW], [POSE.L_ELBOW, POSE.L_WRIST],
+      [POSE.R_SHOULDER, POSE.R_ELBOW], [POSE.R_ELBOW, POSE.R_WRIST],
+      // Legs
+      [POSE.L_HIP, POSE.L_KNEE], [POSE.L_KNEE, POSE.L_ANKLE],
+      [POSE.R_HIP, POSE.R_KNEE], [POSE.R_KNEE, POSE.R_ANKLE]
+    ];
+    
+    // Hand skeleton connections (wrist to fingers only, more human-like)
+    const HAND_EDGES = [
+      // Wrist to each finger base
+      [0, 1], [0, 5], [0, 9], [0, 13], [0, 17],
+      // Thumb
+      [1, 2], [2, 3], [3, 4],
+      // Index finger
+      [5, 6], [6, 7], [7, 8],
+      // Middle finger
+      [9, 10], [10, 11], [11, 12],
+      // Ring finger
+      [13, 14], [14, 15], [15, 16],
+      // Pinky
+      [17, 18], [18, 19], [19, 20]
+    ];
+    
+    // Landmark offsets in MediaPipe output (pose=0-32, left_hand=33-53, right_hand=54-74)
+    const LH_OFFSET = 33;
+    const RH_OFFSET = 54;
+    
+    // Build complete skeleton edges
+    function buildSkeletonEdges(numPoints) {
+      const edges = [...POSE_EDGES];
+      
+      // Add left hand edges if we have enough points
+      if (numPoints > LH_OFFSET) {
+        edges.push(...HAND_EDGES.map(([a, b]) => [LH_OFFSET + a, LH_OFFSET + b]));
+        // Connect pose wrist to hand
+        if (numPoints > POSE.L_WRIST) {
+          edges.push([POSE.L_WRIST, LH_OFFSET + 0]);
+        }
+      }
+      
+      // Add right hand edges if we have enough points
+      if (numPoints > RH_OFFSET) {
+        edges.push(...HAND_EDGES.map(([a, b]) => [RH_OFFSET + a, RH_OFFSET + b]));
+        // Connect pose wrist to hand
+        if (numPoints > POSE.R_WRIST) {
+          edges.push([POSE.R_WRIST, RH_OFFSET + 0]);
+        }
+      }
+      
+      // Filter edges to only include valid indices
+      return edges.filter(([a, b]) => a < numPoints && b < numPoints);
+    }
+
+    // ---------- ISL Dataset & Grammar Constants ----------
+    const AVAILABLE_WORDS = [
+      'alright', 'beautiful', 'bed', 'bedroom', 'blind', 'cell phone', 'chair', 
+      'clock', 'computer', 'deaf', 'door', 'dream', 'dress', 'fan', 'friday',
+      'good afternoon', 'good morning', 'happy', 'hat', 'hello', 'how are you',
+      'lamp', 'loud', 'monday', 'quiet', 'sad', 'saturday', 'shirt', 'skirt',
+      'suit', 'sunday', 'table', 'thursday', 'today', 'tuesday', 'ugly',
+      'wednesday', 'window'
+    ];
+
+    const WORD_TO_FILENAME = {
+      'alright': 'Alright', 'beautiful': 'Beautiful', 'bed': 'Bed', 'bedroom': 'Bedroom',
+      'blind': 'Blind', 'cell phone': 'Cell phone', 'chair': 'Chair', 'clock': 'Clock',
+      'computer': 'Computer', 'deaf': 'Deaf', 'door': 'Door', 'dream': 'Dream',
+      'dress': 'Dress', 'fan': 'Fan', 'friday': 'Friday', 'good afternoon': 'Good afternoon',
+      'good morning': 'Good Morning', 'happy': 'happy', 'hat': 'Hat', 'hello': 'Hello',
+      'how are you': 'How are you', 'lamp': 'Lamp', 'loud': 'loud', 'monday': 'Monday',
+      'quiet': 'quiet', 'sad': 'sad', 'saturday': 'Saturday', 'shirt': 'Shirt',
+      'skirt': 'Skirt', 'suit': 'Suit', 'sunday': 'Sunday', 'table': 'Table',
+      'thursday': 'Thursday', 'today': 'Today', 'tuesday': 'Tuesday', 'ugly': 'Ugly',
+      'wednesday': 'Wednesday', 'window': 'Window'
+    };
+
+    const MULTI_WORD_SIGNS = {
+      'cell phone': 'cell phone',
+      'good afternoon': 'good afternoon',
+      'good morning': 'good morning',
+      'how are you': 'how are you'
+    };
+
+    const TIME_WORDS = new Set([
+      'today', 'tomorrow', 'yesterday', 'monday', 'tuesday', 'wednesday',
+      'thursday', 'friday', 'saturday', 'sunday'
+    ]);
+
+    const FUNCTION_WORDS = new Set([
+      'a', 'an', 'the', 'is', 'am', 'are', 'was', 'were', 'be', 'been',
+      'will', 'would', 'can', 'could', 'should', 'shall', 'may', 'might',
+      'to', 'at', 'in', 'on', 'of', 'for', 'with', 'from', 'by', 'about'
+    ]);
+
+    // ---------- ISL Grammar Conversion (Longest-Match-First Algorithm) ----------
+    function convertSentenceToGloss(sentence) {
+      const original = sentence.trim();
+      if (!original) return { glosses: [], unmatched: [], warnings: [], original };
+
+      let text = original.toLowerCase().replace(/[.,!?;:]/g, '');
+      
+      // Step 1: Build list of all phrases sorted by length (longest first)
+      const allPhrases = [...AVAILABLE_WORDS].sort((a, b) => b.length - a.length);
+      
+      // Step 2: Greedy matching - find longest matches first
+      const matched = [];
+      const unmatched = [];
+      const words = text.split(/\s+/).filter(w => w.length > 0);
+      let position = 0;
+      
+      while (position < words.length) {
+        let foundMatch = false;
+        
+        // Try to match progressively shorter phrases from current position
+        for (let len = words.length - position; len >= 1; len--) {
+          const candidatePhrase = words.slice(position, position + len).join(' ');
+          
+          if (allPhrases.includes(candidatePhrase)) {
+            matched.push(candidatePhrase);
+            position += len;
+            foundMatch = true;
+            break;
+          }
+        }
+        
+        // If no match found, check if it's a function word (skip silently) or unknown word
+        if (!foundMatch) {
+          const currentWord = words[position];
+          if (!FUNCTION_WORDS.has(currentWord)) {
+            unmatched.push(currentWord);
+          }
+          position++;
+        }
+      }
+      
+      // Step 3: Apply ISL grammar rules to matched phrases
+      const timeWords = [];
+      const otherWords = [];
+      
+      matched.forEach(phrase => {
+        // Check if any word in the phrase is a time word
+        const hasTimeWord = phrase.split(' ').some(word => TIME_WORDS.has(word));
+        if (hasTimeWord) {
+          timeWords.push(phrase);
+        } else {
+          otherWords.push(phrase);
+        }
+      });
+      
+      // Time-Topic-Comment structure
+      const glosses = [...timeWords, ...otherWords];
+      
+      // Build warnings
+      const warnings = [];
+      if (unmatched.length > 0) {
+        warnings.push(`Words not in dataset (skipped): ${unmatched.join(', ')}`);
+      }
+      
+      return { glosses, unmatched, warnings, original };
+    }
+
+    // ---------- Real-time Dataset Preview ----------
+    function showDatasetPreview(sentence) {
+      const previewEl = document.getElementById('datasetPreview');
+      const matchesEl = document.getElementById('datasetMatches');
+      
+      if (!sentence || sentence.trim().length === 0) {
+        previewEl.style.display = 'none';
+        return;
+      }
+      
+      const text = sentence.toLowerCase().replace(/[.,!?;:]/g, '');
+      const words = text.split(/\s+/).filter(w => w.length > 0);
+      
+      if (words.length === 0) {
+        previewEl.style.display = 'none';
+        return;
+      }
+      
+      // Find all possible matches in dataset (longest first)
+      const matches = new Set();
+      const allPhrases = [...AVAILABLE_WORDS].sort((a, b) => b.split(' ').length - a.split(' ').length);
+      
+      for (const phrase of allPhrases) {
+        const phraseWords = phrase.split(' ');
+        // Check if this phrase appears in the sentence
+        for (let i = 0; i <= words.length - phraseWords.length; i++) {
+          const candidate = words.slice(i, i + phraseWords.length).join(' ');
+          if (candidate === phrase) {
+            matches.add(phrase);
+          }
+        }
+      }
+      
+      if (matches.size > 0) {
+        const matchItems = Array.from(matches)
+          .map(m => `<span class="match-item">${m.toUpperCase()}</span>`)
+          .join('');
+        matchesEl.innerHTML = matchItems;
+        previewEl.style.display = 'block';
+      } else {
+        matchesEl.innerHTML = '<span class="no-matches">No matching words in dataset</span>';
+        previewEl.style.display = 'block';
+      }
+    }
+
+    // ---------- Player state ----------
+    let frames = null, fps = 30, raf = null, startTime = 0, frameIndex = 0, pausedAt = 0, playing = false;
+    
+    // Sentence playback state
+    let sentenceMode = {
+      active: false,
+      glosses: [],
+      currentIndex: 0,
+      loop: false
+    };
+
+    const wordEl = document.getElementById('word');
+    const statusEl = document.getElementById('status');
+    const btnLoad = document.getElementById('load');
+    const btnPlayPause = document.getElementById('playPause');
+    const btnStop = document.getElementById('stop');
+    const btnStep = document.getElementById('step');
+    const hudEl = document.getElementById('hud');
+
+    const canvas = document.getElementById('preview');
+    const ctx = canvas.getContext('2d');
+
+    // Render controls
+    const flipYEl = document.getElementById('flipY');
+    const autofitEl = document.getElementById('autofit');
+    const ptSizeEl = document.getElementById('ptSize');
+    const ptSizeValEl = document.getElementById('ptSizeVal');
+    const ptColorEl = document.getElementById('ptColor');
+    const edgeColorEl = document.getElementById('edgeColor');
+    const ptSwatch = document.getElementById('ptSwatch');
+    const edgeSwatch = document.getElementById('edgeSwatch');
+
+    // ---------- UI helpers ----------
+    function setStatus(text) { statusEl.textContent = 'Status: ' + text; }
+    function enableControls(ready) {
+      btnPlayPause.disabled = !ready;
+      btnStop.disabled = !ready;
+      btnStep.disabled = !ready;
+    }
+    function updateHud(extra='') {
+      const len = Array.isArray(frames) ? frames.length : 0;
+      hudEl.textContent =
+`frames: ${len}
+fps: ${fps}
+frameIndex: ${frameIndex}${extra ? '\n'+extra : ''}`;
+    }
+
+    // ---------- JSON normalization ----------
+    function normalizeJson(json) {
+      let arr = null, localFps = fps;
+      if (Array.isArray(json)) {
+        arr = json;
+        if (window.__canonicalMeta && typeof window.__canonicalMeta.fps === 'number') {
+          localFps = Number(window.__canonicalMeta.fps) || 30;
+        }
+      } else if (json && typeof json === 'object') {
+        if (Array.isArray(json.frames)) arr = json.frames;
+        if (Array.isArray(json.sequence)) arr = json.sequence;
+        if (typeof json.fps === 'number') localFps = json.fps;
+        if (typeof json.frame_rate === 'number') localFps = json.frame_rate;
+      }
+      return { arr, localFps: Math.max(1, Math.min(120, Number(localFps) || 30)) };
+    }
+
+    // ---------- Sequential Sentence Playback ----------
+    async function loadWordByName(word) {
+      const actualFilename = WORD_TO_FILENAME[word.toLowerCase()] || word;
+      const url = `canonical/${actualFilename}_canonical_median.json`;
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        return { success: true, json, word };
+      } catch (e) {
+        console.error(`Error loading ${word}:`, e);
+        return { success: false, error: e.message, word };
+      }
+    }
+
+    async function playNextWordInSentence() {
+      if (!sentenceMode.active || sentenceMode.currentIndex >= sentenceMode.glosses.length) {
+        // End of sentence
+        if (sentenceMode.loop && sentenceMode.glosses.length > 0) {
+          sentenceMode.currentIndex = 0;
+          await playNextWordInSentence();
+        } else {
+          stopSentencePlayback();
+        }
+        return;
+      }
+
+      const word = sentenceMode.glosses[sentenceMode.currentIndex];
+      const wordDisplay = word.toUpperCase().replace(/\b\w/g, l => l.toUpperCase());
+      
+      document.getElementById('sentenceProgress').textContent = 
+        `Word ${sentenceMode.currentIndex + 1}/${sentenceMode.glosses.length}: ${wordDisplay}`;
+      setStatus(`playing: ${wordDisplay}`);
+
+      const result = await loadWordByName(word);
+      
+      if (result.success) {
+        const { arr, localFps } = normalizeJson(result.json);
+        if (arr && arr.length) {
+          frames = arr;
+          fps = localFps;
+          frameIndex = 0;
+          pausedAt = 0;
+          
+          // Play this word's animation
+          playing = true;
+          startTime = performance.now();
+          raf = requestAnimationFrame(tick);
+          
+          // Wait for animation to complete
+          await waitForWordComplete(arr.length);
+          
+          if (sentenceMode.active) {
+            sentenceMode.currentIndex++;
+            await playNextWordInSentence();
+          }
+        } else {
+          setStatus(`Error: no frames in ${word}`);
+          sentenceMode.currentIndex++;
+          await playNextWordInSentence();
+        }
+      } else {
+        setStatus(`Error loading ${word}: ${result.error}`);
+        sentenceMode.currentIndex++;
+        await playNextWordInSentence();
+      }
+    }
+
+    function waitForWordComplete(totalFrames) {
+      return new Promise(resolve => {
+        const checkComplete = () => {
+          if (!sentenceMode.active || frameIndex >= totalFrames - 1) {
+            resolve();
+          } else {
+            requestAnimationFrame(checkComplete);
+          }
+        };
+        checkComplete();
+      });
+    }
+
+    function startSentencePlayback(glosses) {
+      if (glosses.length === 0) return;
+      
+      sentenceMode.active = true;
+      sentenceMode.glosses = glosses;
+      sentenceMode.currentIndex = 0;
+      sentenceMode.loop = document.getElementById('loopSentence').checked;
+      
+      document.getElementById('playSentence').disabled = true;
+      document.getElementById('stopSentence').disabled = false;
+      
+      playNextWordInSentence();
+    }
+
+    function stopSentencePlayback() {
+      sentenceMode.active = false;
+      sentenceMode.currentIndex = 0;
+      playing = false;
+      if (raf) cancelAnimationFrame(raf);
+      raf = null;
+      
+      document.getElementById('playSentence').disabled = false;
+      document.getElementById('stopSentence').disabled = true;
+      document.getElementById('sentenceProgress').textContent = '';
+      setStatus('sentence playback stopped');
+    }
+
+    async function loadWord() {
+      const w = (wordEl.value || '').trim().toLowerCase();
+      if (!w) { setStatus('error: enter a word'); return; }
+      
+      // Stop any sentence playback
+      if (sentenceMode.active) {
+        stopSentencePlayback();
+      }
+      
+      const url = `canonical/${encodeURIComponent(w)}_canonical_median.json`;
+      setStatus(`loading ${url} …`);
+      stop();
+
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+
+        const { arr, localFps } = normalizeJson(json);
+        if (!arr || !arr.length) throw new Error('no frames found');
+
+        frames = arr; fps = localFps; frameIndex = 0; pausedAt = 0;
+        setStatus(`ready: ${frames.length} frames @ ${fps} fps`);
+        enableControls(true);
+
+        window.applyCanonicalFrame(frames[0], 0); // show first frame
+        updateHud();
+        play();                                   // auto-play so you see motion
+      } catch (e) {
+        frames = null; enableControls(false);
+        setStatus('error: ' + (e && e.message ? e.message : 'load failed'));
+        updateHud();
+      }
+    }
+
+    function tick(t) {
+      if (!playing || !frames || !frames.length) return;
+      const msPerFrame = 1000 / fps;
+      if (!startTime) startTime = t;
+      const elapsed = t - startTime;
+      const nextIdx = Math.floor(elapsed / msPerFrame);
+      if (nextIdx !== frameIndex) frameIndex = nextIdx;
+
+      if (frameIndex >= frames.length) {
+        pause(); setStatus('done'); updateHud(); return;
+      }
+
+      try { window.applyCanonicalFrame(frames[frameIndex], frameIndex); } catch(e) { console.warn(e); }
+      raf = requestAnimationFrame(tick);
+      updateHud();
+    }
+
+    function play() {
+      if (!frames || !frames.length) { setStatus('nothing loaded'); return; }
+      playing = true; btnPlayPause.textContent = 'Pause'; setStatus('playing');
+      startTime = pausedAt > 0 ? performance.now() - pausedAt * (1000 / fps) : performance.now();
+      raf = requestAnimationFrame(tick); updateHud();
+    }
+    function pause() {
+      playing = false; if (raf) cancelAnimationFrame(raf); raf = null;
+      pausedAt = frameIndex; btnPlayPause.textContent = 'Play'; setStatus('paused'); updateHud();
+    }
+    function stop() {
+      playing = false; if (raf) cancelAnimationFrame(raf); raf = null;
+      frameIndex = 0; pausedAt = 0; btnPlayPause.textContent = 'Play'; updateHud();
+    }
+    function stepOnce() {
+      if (!frames || !frames.length) return;
+      pause(); frameIndex = Math.min(frameIndex + 1, frames.length - 1);
+      window.applyCanonicalFrame(frames[frameIndex], frameIndex);
+      setStatus('stepping'); updateHud();
+    }
+
+    // ---------- Renderer (robust + visible) ----------
+    function clearCanvas() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#ffffff';               // bright background so colors pop
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // recurse to collect ANY arrays of {x,y} or [x,y] (even nested)
+    function collectPointArrays(obj, out) {
+      if (!obj) return;
+      if (Array.isArray(obj)) {
+        if (obj.length && Array.isArray(obj[0]) && obj[0].length >= 2 && isFinite(obj[0][0]) && isFinite(obj[0][1])) {
+          out.push(obj.map(p => [Number(p[0]), Number(p[1])])); return;
+        }
+        if (obj.length && typeof obj[0] === 'object' && obj[0] && 'x' in obj[0] && 'y' in obj[0]) {
+          out.push(obj.map(p => [Number(p.x), Number(p.y)])); return;
+        }
+        for (const el of obj) collectPointArrays(el, out);
+        return;
+      }
+      if (typeof obj === 'object') {
+        for (const k in obj) collectPointArrays(obj[k], out);
+      }
+    }
+    function mergePointSets(pointSets) {
+      const merged = []; for (const arr of pointSets) for (const p of arr) merged.push(p); return merged;
+    }
+    function isNormalized(pts) {
+      let hits = 0; for (let i = 0; i < Math.min(10, pts.length); i++) { const [x,y]=pts[i]; if (x>=0&&x<=1&&y>=0&&y<=1) hits++; }
+      return hits >= Math.min(3, pts.length);
+    }
+    function computeBBox(pts) {
+      let minX= Infinity, minY= Infinity, maxX=-Infinity, maxY=-Infinity;
+      for (const [x,y] of pts) { if (x<minX)minX=x; if (y<minY)minY=y; if (x>maxX)maxX=x; if (y>maxY)maxY=y; }
+      return {minX, minY, maxX, maxY, w:maxX-minX, h:maxY-minY};
+    }
+
+    function mapPoint(x, y, normalized, bbox, PAD, W, H, flipY) {
+      if (normalized) {
+        const yy = flipY ? 1 - y : y;
+        return [x * W + PAD, yy * H + PAD];
+      }
+      // pixel space -> auto-fit to canvas using bbox
+      const sx = W / Math.max(1, bbox.w);
+      const sy = H / Math.max(1, bbox.h);
+      const s = autofitEl.checked ? Math.min(sx, sy) : 1;
+      const cx = (x - bbox.minX) * s + PAD + (W - bbox.w * s) / 2;
+      const cyRaw = (y - bbox.minY) * s + PAD + (H - bbox.h * s) / 2;
+      const cy = flipY ? (H + 2*PAD - cyRaw) : cyRaw; // invert if requested
+      return [cx, cy];
+    }
+
+    function drawEdges(edges, pts, normalized, bbox, PAD, W, H, flipY, edgeColor) {
+      if (!Array.isArray(edges)) return;
+      ctx.beginPath();
+      for (const e of edges) {
+        if (!Array.isArray(e) || e.length < 2) continue;
+        const a = e[0], b = e[1];
+        if (!pts[a] || !pts[b]) continue;
+        const p1 = mapPoint(pts[a][0], pts[a][1], normalized, bbox, PAD, W, H, flipY);
+        const p2 = mapPoint(pts[b][0], pts[b][1], normalized, bbox, PAD, W, H, flipY);
+        ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+      }
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = edgeColor;
+      ctx.stroke();
+    }
+
+    window.applyCanonicalFrame = function(frame, i) {
+      clearCanvas();
+
+      // collect points (robust, nested)
+      const sets = []; collectPointArrays(frame, sets);
+      if (!sets.length) {
+        ctx.fillStyle = '#111'; ctx.font = '14px ui-monospace, monospace';
+        ctx.fillText('No 2D points detected in this frame.', 12, 22);
+        if (i % 10 === 0) console.log('Frame (no 2D points)', i, frame);
+        return;
+      }
+
+      // merge all sets (pose + hands, etc.)
+      const pts = mergePointSets(sets);
+      const PAD = 30, W = canvas.width - PAD * 2, H = canvas.height - PAD * 2;
+      const normalized = isNormalized(pts);
+      const bbox = computeBBox(pts);
+
+      // Build skeleton edges based on number of points (MediaPipe structure)
+      const edges = buildSkeletonEdges(pts.length);
+
+      // draw edges first (under the points)
+      drawEdges(edges, pts, normalized, bbox, PAD, W, H, flipYEl.checked, edgeColorEl.value);
+
+      // draw points (bigger + bright, on top of edges)
+      const r = Number(ptSizeEl.value) || 4;
+      ctx.fillStyle = ptColorEl.value;
+      for (const [x, y] of pts) {
+        const [px, py] = mapPoint(x, y, normalized, bbox, PAD, W, H, flipYEl.checked);
+        ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
+      }
+    };
+
+    // ---------- events ----------
+    // Sentence conversion
+    document.getElementById('convertBtn').addEventListener('click', () => {
+      const sentence = document.getElementById('sentenceInput').value;
+      const result = convertSentenceToGloss(sentence);
+      
+      if (result.glosses.length > 0) {
+        const glossDisplay = result.glosses.map(g => g.toUpperCase()).join(' → ');
+        document.getElementById('glosses').textContent = glossDisplay;
+        document.getElementById('glossDisplay').style.display = 'block';
+        document.getElementById('playSentence').disabled = false;
+        document.getElementById('playSentence').dataset.glosses = JSON.stringify(result.glosses);
+        setStatus(`Converted to ${result.glosses.length} signs`);
+      } else {
+        document.getElementById('glossDisplay').style.display = 'none';
+        document.getElementById('playSentence').disabled = true;
+        setStatus('No valid words found in sentence');
+      }
+      
+      if (result.warnings.length > 0) {
+        document.getElementById('warnings').textContent = result.warnings.join('; ');
+        document.getElementById('warnings').classList.add('show');
+      } else {
+        document.getElementById('warnings').classList.remove('show');
+      }
+    });
+    
+    document.getElementById('sentenceInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('convertBtn').click();
+    });
+    
+    // Real-time dataset preview as user types
+    document.getElementById('sentenceInput').addEventListener('input', (e) => {
+      showDatasetPreview(e.target.value);
+    });
+    
+    document.getElementById('playSentence').addEventListener('click', () => {
+      const glosses = JSON.parse(document.getElementById('playSentence').dataset.glosses || '[]');
+      startSentencePlayback(glosses);
+    });
+    
+    document.getElementById('stopSentence').addEventListener('click', () => {
+      stopSentencePlayback();
+    });
+    
+    // Single word playback
+    btnLoad.addEventListener('click', loadWord);
+    btnPlayPause.addEventListener('click', () => (playing ? pause() : play()));
+    btnStop.addEventListener('click', stop);
+    btnStep.addEventListener('click', stepOnce);
+    wordEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadWord(); });
+    window.addEventListener('keydown', (e) => {
+  const active = document.activeElement;
+  const isTyping = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+
+  // ⏯️ Space toggles only when not typing in a field
+  if (e.key === ' ' && !isTyping) {
+    e.preventDefault();
+    if (!btnPlayPause.disabled) playing ? pause() : play();
+  }
+
+  // ▶️ Step with right arrow (same rule)
+  if (e.key === 'ArrowRight' && !isTyping) {
+    e.preventDefault();
+    stepOnce();
+  }
+});
+
+
+    // live UI updates
+    ptSizeEl.addEventListener('input', () => { ptSizeValEl.textContent = ptSizeEl.value; });
+    ptColorEl.addEventListener('input', () => { ptSwatch.style.background = ptColorEl.value; });
+    edgeColorEl.addEventListener('input', () => { edgeSwatch.style.background = edgeColorEl.value; });
+
+    setStatus('ready - enter a sentence to convert to ISL glosses'); updateHud();
+  </script>
+</body>
+</html>

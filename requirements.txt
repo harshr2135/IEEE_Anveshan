@@ -1,5 +1,5 @@
 mediapipe==0.10.14
-mediapipe==0.10.21
+# mediapipe==0.10.21
 numpy==2.3.4
 open3d==0.19.0
 opencv_contrib_python==4.11.0.86
