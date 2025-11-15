@@ -1,7 +1,7 @@
-mediapipe==0.10.14
+mediapipe
 # mediapipe==0.10.21
-numpy==2.3.4
-open3d==0.19.0
-opencv_contrib_python==4.11.0.86
-opencv_python==4.10.0.84
-opencv_python_headless==4.11.0.86
+numpy
+open3d
+opencv_contrib_python
+opencv_python
+opencv_python_headless
