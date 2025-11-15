@@ -22,7 +22,7 @@ import numpy as np
 import cv2
 import mediapipe as mp
 
-DATA_IN = "C:/Users/Jyothi/ISL_Anveshan/data"
+DATA_IN = "C:/Users/yasha/Downloads/ISL_data"
 DATA_OUT = "data_np"
 
 # Landmark counts (fixed by MediaPipe)
